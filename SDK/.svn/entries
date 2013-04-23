@@ -1,0 +1,68 @@
+10
+
+dir
+321
+https://construct.svn.sourceforge.net/svnroot/construct/SDK
+https://construct.svn.sourceforge.net/svnroot/construct
+
+
+
+2011-12-06T23:59:07.578456Z
+299
+psychokinesis
+
+
+svn:special svn:externals svn:needs-lock
+
+
+
+
+
+
+
+
+
+
+
+8608462f-0e06-4f73-9daa-bc286878d562
+
+About the SDKs.txt
+file
+
+
+
+
+2013-04-14T21:53:46.913000Z
+b0de4cdf3f35c29c0d273c251d4bcf5b
+2009-12-09T22:02:59.877829Z
+4
+ashleysbrain
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+1090
+
+Template MFC VC6-8 Static
+dir
+
+Template Win32 VC8-9 Static
+dir
+
