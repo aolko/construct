@@ -344,6 +344,7 @@ class MainActivity : ComponentActivity() {
         .put("conditionJoin", event.conditionJoin.name)
         .put("name", event.name)
         .put("enabled", event.enabled)
+        .put("repeatCount", event.repeatCount)
         .put("legacyCondition", event.legacyCondition)
         .put("legacyAction", event.legacyAction)
         .put("conditions", JSONArray().also { array ->
@@ -412,6 +413,7 @@ class MainActivity : ComponentActivity() {
             actions = actions,
             children = children,
             enabled = json.optBoolean("enabled", true),
+            repeatCount = json.optInt("repeatCount", 1),
             legacyCondition = json.optString("condition", json.optString("legacyCondition")),
             legacyAction = json.optString("action", json.optString("legacyAction"))
         )
@@ -1457,6 +1459,13 @@ private fun EventEditor(state: EditorState, modifier: Modifier = Modifier) {
                 )
                 state.markProjectChanged()
             }
+            EventAddButton("Repetir") {
+                state.events = state.events + EventRow(
+                    id = state.nextEventId++, eventSheetId = activeSheetId, blockKind = EventBlockKind.REPEAT,
+                    repeatCount = 2
+                )
+                state.markProjectChanged()
+            }
             EventAddButton("Subevento") {
                 val parent = flattenEventTree(sheetEvents).lastOrNull {
                     it.first.blockKind == EventBlockKind.EVENT ||
@@ -1580,6 +1589,7 @@ private fun EventBlockEditor(
                 EventBlockKind.GROUP -> Color(0xFFE9EFF7)
                 EventBlockKind.COMMENT -> Color(0xFFFFF3D9)
                 EventBlockKind.FUNCTION -> Color(0xFFE8F4EA)
+                EventBlockKind.REPEAT -> Color(0xFFE7EAF7)
                 EventBlockKind.EVENT -> MaterialTheme.colorScheme.surface
             }
         )
@@ -1592,11 +1602,12 @@ private fun EventBlockEditor(
                         EventBlockKind.GROUP -> "Grupo"
                         EventBlockKind.COMMENT -> "Comentário"
                         EventBlockKind.FUNCTION -> "Função"
+                        EventBlockKind.REPEAT -> "Repetir"
                     },
                     style = MaterialTheme.typography.labelLarge,
                     modifier = Modifier.weight(1f)
                 )
-                if (event.blockKind == EventBlockKind.EVENT || event.blockKind == EventBlockKind.GROUP) {
+                if (event.blockKind in setOf(EventBlockKind.EVENT, EventBlockKind.GROUP, EventBlockKind.REPEAT)) {
                     Switch(checked = event.enabled, onCheckedChange = { onChange(event.copy(enabled = it)) })
                 }
                 IconButton(onClick = onDuplicate) {
@@ -1604,7 +1615,22 @@ private fun EventBlockEditor(
                 }
                 IconButton(onClick = onDelete) { Icon(Icons.Default.Delete, contentDescription = "Excluir bloco") }
             }
-            if (event.blockKind != EventBlockKind.EVENT) {
+            if (event.blockKind == EventBlockKind.REPEAT) {
+                var countText by remember(event.id, event.repeatCount) {
+                    mutableStateOf(event.repeatCount.toString())
+                }
+                OutlinedTextField(
+                    value = countText,
+                    onValueChange = { text ->
+                        countText = text
+                        text.toIntOrNull()?.let { count ->
+                            if (count in 0..1000) onChange(event.copy(repeatCount = count))
+                        }
+                    },
+                    label = { Text("Número de repetições (0–1000)") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            } else if (event.blockKind != EventBlockKind.EVENT) {
                 OutlinedTextField(
                     value = event.name,
                     onValueChange = { onChange(event.copy(name = it)) },

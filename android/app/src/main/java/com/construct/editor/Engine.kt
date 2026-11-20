@@ -36,7 +36,7 @@ data class LayerModel(
     val scrollY: Float = 1f
 )
 
-enum class EventBlockKind { EVENT, GROUP, COMMENT, FUNCTION }
+enum class EventBlockKind { EVENT, GROUP, COMMENT, FUNCTION, REPEAT }
 
 enum class ConditionKind {
     ALWAYS,
@@ -99,6 +99,7 @@ data class EventRow(
     val actions: List<EventAction> = listOf(EventAction()),
     val children: List<EventRow> = emptyList(),
     val enabled: Boolean = true,
+    val repeatCount: Int = 1,
     val legacyCondition: String = "",
     val legacyAction: String = ""
 )
@@ -315,6 +316,13 @@ class GameRuntime(project: RuntimeProject) {
                 EventBlockKind.GROUP -> {
                     eventStates[event.id] = true
                     runBlocks(event.children, input, localScope)
+                    continue
+                }
+                EventBlockKind.REPEAT -> {
+                    eventStates[event.id] = event.enabled
+                    val count = event.repeatCount.coerceIn(0, 1000)
+                    if (count != event.repeatCount) lastError = "O bloco Repetir aceita de 0 a 1000 repetições."
+                    repeat(count) { runBlocks(event.children, input, localScope) }
                     continue
                 }
                 EventBlockKind.FUNCTION -> {

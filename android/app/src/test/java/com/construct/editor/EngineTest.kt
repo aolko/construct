@@ -164,6 +164,28 @@ class EngineTest {
     }
 
     @Test
+    fun repeatBlockExecutesItsChildrenTheConfiguredNumberOfTimes() {
+        val repeat = EventRow(
+            id = 1,
+            blockKind = EventBlockKind.REPEAT,
+            repeatCount = 3,
+            children = listOf(EventRow(
+                id = 2,
+                actions = listOf(EventAction(
+                    kind = ActionKind.ADD_VARIABLE,
+                    variable = "count",
+                    value = 1f
+                ))
+            ))
+        )
+        val runtime = runtime(events = listOf(repeat))
+
+        runtime.step(0.05f, RuntimeInput())
+
+        assertEquals(3f, runtime.globalVariables["count"] ?: 0f, 0.001f)
+    }
+
+    @Test
     fun emptyProjectDoesNotCreateRuntimeObjectsAndTouchIsEventDriven() {
         val touchEvent = EventRow(
             id = 1,
