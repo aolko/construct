@@ -20,8 +20,8 @@ O runtime Android é Kotlin/JVM e independente da camada MFC do editor antigo. O
 |---|---|
 | Preview de cena/projeto em tela cheia | Implementado; usa os objetos, eventos, camadas e recursos do projeto aberto; não injeta controles/instâncias |
 | Loop do runtime | Passo limitado a 50 ms, animações e eventos atualizados em cada frame |
-| Eventos | `Sempre`, início da cena, intervalo periódico, tecla, toque na cena/objeto, comparação numérica, sobreposição retangular, `Senão`, repetição limitada, AND/OR e inversão |
-| Ações | Movimento, posição, variáveis global/local/instância, rotação, criar instância a partir de modelo, remover instâncias, reproduzir áudio e chamada de função |
+| Eventos | `Sempre`, início da cena, intervalo periódico, temporizador nomeado, tecla, toque na cena/objeto, comparação numérica, sobreposição retangular, `Senão`, repetição limitada, AND/OR e inversão |
+| Ações | Movimento, posição, variáveis global/local/instância, iniciar/pausar/zerar temporizador, rotação, criar instância a partir de modelo, remover instâncias, reproduzir áudio e chamada de função |
 | Estrutura de eventos | Grupos, comentários, funções e subeventos |
 | Expressões | Aritmética com `+`, `-`, `*`, `/`, parênteses e variáveis numéricas |
 | Behaviors | 8 direções, plataforma/gravity simples, projétil, sólido, seguir câmera e limitar à cena |
@@ -44,7 +44,7 @@ Os testes unitários de `EngineTest` cobrem movimentação direcional, eventos, 
 - A condição de toque em objeto usa coordenadas da cena e limites retangulares alinhados aos eixos; não considera rotação nem máscaras.
 - Várias cenas possuem instâncias e folhas de eventos independentes; não há ainda transição entre layouts nem persistência de estado independente por cena durante o jogo.
 - O preview aceita toque e teclado físico. Não insere controles virtuais nem objetos por padrão; não há suporte a gamepad.
-- O editor de eventos implementa apenas as condições, ações e expressões listadas acima. A repetição é fixa (0–1000 vezes), sem laços condicionais; Else é avaliado contra o evento irmão anterior. Não há temporizadores nomeados nem parâmetros/retornos de funções.
+- O editor de eventos implementa apenas as condições, ações e expressões listadas acima. A repetição é fixa (0–1000 vezes), sem laços condicionais; Else é avaliado contra o evento irmão anterior. Funções ainda não aceitam parâmetros nem valores de retorno.
 - A edição de animações é uma sequência por objeto; não inclui pivôs, pontos de imagem, máscaras de colisão ou editor de imagem.
 - Imagens são normalizadas para PNG e áudio é armazenado como dado Base64 no `.ccproj`; formatos de áudio reproduzíveis dependem do decodificador Android. Fontes ainda não foram portadas.
 - Arquivos `.cap` válidos podem ser preservados sem perda como arquivos originais, mas o conteúdo binário MFC não é convertido em objetos/eventos editáveis. Não salvar projetos Android como `.cap`.

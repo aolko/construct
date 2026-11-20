@@ -374,7 +374,7 @@ class MainActivity : ComponentActivity() {
                     .put("variable", condition.variable).put("compare", condition.compare.name)
                     .put("value", condition.value).put("firstObject", condition.firstObject)
                     .put("secondObject", condition.secondObject).put("valueExpression", condition.valueExpression)
-                    .put("inverted", condition.inverted))
+                    .put("inverted", condition.inverted).put("timerName", condition.timerName))
             }
         })
         .put("actions", JSONArray().also { array ->
@@ -383,7 +383,7 @@ class MainActivity : ComponentActivity() {
                     .put("variable", action.variable).put("value", action.value)
                     .put("valueY", action.valueY).put("functionName", action.functionName)
                     .put("valueExpression", action.valueExpression).put("valueYExpression", action.valueYExpression)
-                    .put("audioAssetId", action.audioAssetId))
+                    .put("audioAssetId", action.audioAssetId).put("timerName", action.timerName))
             }
         })
         .put("children", JSONArray().also { array -> event.children.forEach { array.put(serializeEvent(it)) } })
@@ -402,7 +402,8 @@ class MainActivity : ComponentActivity() {
                     firstObject = value.optString("firstObject"),
                     secondObject = value.optString("secondObject"),
                     valueExpression = value.optString("valueExpression"),
-                    inverted = value.optBoolean("inverted", false)
+                    inverted = value.optBoolean("inverted", false),
+                    timerName = value.optString("timerName")
                 )
             }
         } ?: listOf(EventCondition(ConditionKind.UNSUPPORTED))
@@ -419,7 +420,8 @@ class MainActivity : ComponentActivity() {
                     functionName = value.optString("functionName"),
                     valueExpression = value.optString("valueExpression"),
                     valueYExpression = value.optString("valueYExpression"),
-                    audioAssetId = value.optInt("audioAssetId", 0)
+                    audioAssetId = value.optInt("audioAssetId", 0),
+                    timerName = value.optString("timerName")
                 )
             }
         } ?: listOf(EventAction(ActionKind.UNSUPPORTED))
@@ -1749,6 +1751,26 @@ private fun ConditionEditor(
                 }
                 Text("Verdadeira quando a área tocada estiver sobre uma instância.")
             }
+            ConditionKind.TIMER_COMPARE -> {
+                OutlinedTextField(
+                    condition.timerName,
+                    { onChange(condition.copy(timerName = it)) },
+                    label = { Text("Nome do temporizador") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    EnumChoice(condition.compareLabel(), CompareKind.entries.map { it.label() }) { label ->
+                        CompareKind.entries.firstOrNull { it.label() == label }
+                            ?.let { onChange(condition.copy(compare = it)) }
+                    }
+                    OutlinedTextField(
+                        condition.valueExpression.ifBlank { condition.value.toString() },
+                        { onChange(condition.copy(valueExpression = it)) },
+                        label = { Text("Segundos") },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
             ConditionKind.VARIABLE_COMPARE -> {
                 OutlinedTextField(condition.variable, { onChange(condition.copy(variable = it)) },
                     label = { Text("Variável (global:, local: ou instance:)") }, modifier = Modifier.fillMaxWidth())
@@ -1874,6 +1896,12 @@ private fun ActionEditor(
                     }
                 }
             }
+            ActionKind.START_TIMER, ActionKind.STOP_TIMER, ActionKind.RESET_TIMER -> OutlinedTextField(
+                action.timerName,
+                { onChange(action.copy(timerName = it)) },
+                label = { Text("Nome do temporizador") },
+                modifier = Modifier.fillMaxWidth()
+            )
             ActionKind.UNSUPPORTED -> Text(
                 "Este bloco veio de uma versão anterior sem semântica conhecida e não será executado.",
                 color = Color(0xFF8A5A00)
@@ -1886,6 +1914,7 @@ private fun conditionLabel(kind: ConditionKind) = when (kind) {
     ConditionKind.ALWAYS -> "Sempre"
     ConditionKind.START_OF_LAYOUT -> "Ao iniciar a cena"
     ConditionKind.EVERY_X_SECONDS -> "A cada intervalo"
+    ConditionKind.TIMER_COMPARE -> "Comparar temporizador"
     ConditionKind.KEY_DOWN -> "Tecla/controle pressionado"
     ConditionKind.TOUCH -> "Toque na cena"
     ConditionKind.TOUCH_ON_OBJECT -> "Toque em objeto"
@@ -1903,6 +1932,9 @@ private fun actionLabel(kind: ActionKind) = when (kind) {
     ActionKind.DESTROY_INSTANCE -> "Destruir objeto"
     ActionKind.CREATE_INSTANCE -> "Criar instância"
     ActionKind.PLAY_AUDIO -> "Reproduzir áudio"
+    ActionKind.START_TIMER -> "Iniciar temporizador"
+    ActionKind.STOP_TIMER -> "Pausar temporizador"
+    ActionKind.RESET_TIMER -> "Zerar temporizador"
     ActionKind.ROTATE -> "Definir rotação"
     ActionKind.CALL_FUNCTION -> "Chamar função"
     ActionKind.UNSUPPORTED -> "Ação desconhecida (preservada)"

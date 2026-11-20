@@ -24,7 +24,7 @@
 | Barra de ferramentas inferior | Parcial | Recolhe/expande por gesto em área dedicada |
 | Importação de recursos | Parcial | Imagens/áudio múltiplos, renomeação e remoção; fontes e substituição ainda não suportadas |
 | Animações | Parcial | Uma sequência nomeada por objeto, frames, tempo, reordenação, duplicação, remoção e playback |
-| Eventos | Parcial | AND/OR, inversão, Else, repetição limitada, duplicação, grupos, subeventos, comentários, funções, teclado/toque, comparações, sobreposição, reprodução de áudio e ações listadas em `RUNTIME.md` |
+| Eventos | Parcial | AND/OR, inversão, Else, repetição limitada, temporizadores nomeados, duplicação, grupos, subeventos, comentários, funções, teclado/toque, comparações, sobreposição, reprodução de áudio e ações listadas em `RUNTIME.md` |
 | Behaviors | Parcial | Movimento/gravidade/colisão retangular simplificados; sem equivalência física ao Construct |
 | Câmera | Parcial | Seguir instância, zoom e clamp retangular; sem múltiplas câmeras ou transições |
 | Depuração | Parcial | FPS, contagem, variáveis, estados de condição e erros; sem pausa, step, breakpoint ou edição ao vivo |

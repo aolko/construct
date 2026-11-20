@@ -42,6 +42,7 @@ enum class ConditionKind {
     ALWAYS,
     START_OF_LAYOUT,
     EVERY_X_SECONDS,
+    TIMER_COMPARE,
     KEY_DOWN,
     TOUCH,
     TOUCH_ON_OBJECT,
@@ -63,7 +64,8 @@ data class EventCondition(
     val firstObject: String = "",
     val secondObject: String = "",
     val valueExpression: String = "",
-    val inverted: Boolean = false
+    val inverted: Boolean = false,
+    val timerName: String = ""
 )
 
 enum class ActionKind {
@@ -75,6 +77,9 @@ enum class ActionKind {
     DESTROY_INSTANCE,
     CREATE_INSTANCE,
     PLAY_AUDIO,
+    START_TIMER,
+    STOP_TIMER,
+    RESET_TIMER,
     ROTATE,
     CALL_FUNCTION
 }
@@ -88,7 +93,8 @@ data class EventAction(
     val functionName: String = "",
     val valueExpression: String = "",
     val valueYExpression: String = "",
-    val audioAssetId: Int = 0
+    val audioAssetId: Int = 0,
+    val timerName: String = ""
 )
 
 data class EventRow(
@@ -153,6 +159,7 @@ class GameRuntime(project: RuntimeProject) {
     private val events = project.events.filter { it.eventSheetId == project.activeEventSheetId }
     private val localVariables = mutableMapOf<String, Float>()
     private val functionLocalScopes = mutableMapOf<Long, MutableMap<String, Float>>()
+    private val stoppedTimers = mutableSetOf<String>()
     private var startPending = true
     private val previousInput = mutableSetOf<String>()
     private val verticalVelocity = mutableMapOf<Int, Float>()
@@ -175,6 +182,7 @@ class GameRuntime(project: RuntimeProject) {
         private set
     val eventStates = mutableMapOf<Long, Boolean>()
     val audioRequests = mutableListOf<Int>()
+    val timers = mutableMapOf<String, Float>()
 
     fun step(deltaSeconds: Float, input: RuntimeInput) {
         val dt = deltaSeconds.coerceIn(0f, 0.05f)
@@ -186,6 +194,9 @@ class GameRuntime(project: RuntimeProject) {
         val eventInput = input.copy(touchPressed = input.touchPressed && "TOUCH" !in previousInput)
         previousElapsedSeconds = elapsedSeconds
         elapsedSeconds += dt
+        timers.keys.toList().forEach { name ->
+            if (name !in stoppedTimers) timers[name] = (timers[name] ?: 0f) + dt
+        }
         moveBehaviors(dt, jumpInput)
         runBlocks(events, eventInput, localVariables)
         advanceAnimations(dt)
@@ -366,6 +377,16 @@ class GameRuntime(project: RuntimeProject) {
                 floor(previousElapsedSeconds / interval) < floor(elapsedSeconds / interval)
             }
         }
+        ConditionKind.TIMER_COMPARE -> {
+            if (condition.timerName.isBlank()) {
+                lastError = "Informe o nome do temporizador na condição."
+                false
+            } else {
+                val elapsed = timers[condition.timerName]
+                val threshold = evaluateNumber(condition.valueExpression, condition.value, localScope)
+                elapsed != null && compare(elapsed, threshold, condition.compare)
+            }
+        }
         ConditionKind.KEY_DOWN -> input.keyDown(condition.key)
         ConditionKind.TOUCH -> input.touchPressed
         ConditionKind.TOUCH_ON_OBJECT -> input.touchPressed && objects.any { instance ->
@@ -474,6 +495,20 @@ class GameRuntime(project: RuntimeProject) {
             ActionKind.ROTATE ->
                 targets.forEach { it.rotation = value }
             ActionKind.PLAY_AUDIO -> if (action.audioAssetId > 0) audioRequests += action.audioAssetId
+            ActionKind.START_TIMER -> {
+                if (action.timerName.isNotBlank()) {
+                    timers[action.timerName] = 0f
+                    stoppedTimers.remove(action.timerName)
+                } else lastError = "Informe o nome do temporizador para iniciá-lo."
+            }
+            ActionKind.STOP_TIMER -> {
+                if (action.timerName in timers) stoppedTimers += action.timerName
+                else lastError = "O temporizador '${action.timerName}' não foi iniciado."
+            }
+            ActionKind.RESET_TIMER -> {
+                if (action.timerName in timers) timers[action.timerName] = 0f
+                else lastError = "O temporizador '${action.timerName}' não foi iniciado."
+            }
             ActionKind.CALL_FUNCTION, ActionKind.UNSUPPORTED -> Unit
         }
     }

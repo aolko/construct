@@ -202,6 +202,43 @@ class EngineTest {
     }
 
     @Test
+    fun namedTimerCanStartTriggerAConditionAndPause() {
+        val start = EventRow(
+            id = 1,
+            conditions = listOf(EventCondition(kind = ConditionKind.START_OF_LAYOUT)),
+            actions = listOf(EventAction(kind = ActionKind.START_TIMER, timerName = "delay"))
+        )
+        val elapsed = EventRow(
+            id = 2,
+            conditions = listOf(EventCondition(
+                kind = ConditionKind.TIMER_COMPARE,
+                timerName = "delay",
+                compare = CompareKind.GREATER,
+                value = 0.09f
+            )),
+            actions = listOf(EventAction(kind = ActionKind.SET_VARIABLE, variable = "done", value = 1f))
+        )
+        val pause = EventRow(
+            id = 3,
+            conditions = listOf(EventCondition(
+                kind = ConditionKind.VARIABLE_COMPARE,
+                variable = "done",
+                compare = CompareKind.GREATER,
+                value = 0f
+            )),
+            actions = listOf(EventAction(kind = ActionKind.STOP_TIMER, timerName = "delay"))
+        )
+        val runtime = runtime(events = listOf(start, elapsed, pause))
+
+        repeat(3) { runtime.step(0.05f, RuntimeInput()) }
+        val stoppedAt = runtime.timers["delay"] ?: 0f
+        runtime.step(0.05f, RuntimeInput())
+
+        assertEquals(1f, runtime.globalVariables["done"] ?: 0f, 0f)
+        assertEquals(stoppedAt, runtime.timers["delay"] ?: 0f, 0.001f)
+    }
+
+    @Test
     fun emptyProjectDoesNotCreateRuntimeObjectsAndTouchIsEventDriven() {
         val touchEvent = EventRow(
             id = 1,
