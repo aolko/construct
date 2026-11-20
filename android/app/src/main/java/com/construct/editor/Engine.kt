@@ -16,7 +16,8 @@ data class BehaviorSpec(
     val kind: BehaviorKind,
     val speed: Float = 180f,
     val gravity: Float = 900f,
-    val jumpStrength: Float = 380f
+    val jumpStrength: Float = 380f,
+    val cameraZoom: Float = 1f
 )
 
 data class AnimationFrame(
@@ -27,6 +28,7 @@ data class AnimationFrame(
 data class LayerModel(
     val id: Int,
     val name: String,
+    val layoutId: Int = 1,
     val visible: Boolean = true,
     val opacity: Float = 1f,
     val scrollX: Float = 1f,
@@ -35,9 +37,10 @@ data class LayerModel(
 
 enum class EventBlockKind { EVENT, GROUP, COMMENT, FUNCTION }
 
-enum class ConditionKind { ALWAYS, START_OF_LAYOUT, KEY_DOWN, VARIABLE_COMPARE, OVERLAP, UNSUPPORTED }
+enum class ConditionKind { ALWAYS, START_OF_LAYOUT, KEY_DOWN, TOUCH, VARIABLE_COMPARE, OVERLAP, ELSE, UNSUPPORTED }
 
 enum class CompareKind { EQUAL, NOT_EQUAL, GREATER, LESS }
+enum class ConditionJoin { AND, OR }
 
 data class EventCondition(
     val kind: ConditionKind = ConditionKind.ALWAYS,
@@ -47,7 +50,8 @@ data class EventCondition(
     val value: Float = 0f,
     val firstObject: String = "",
     val secondObject: String = "",
-    val valueExpression: String = ""
+    val valueExpression: String = "",
+    val inverted: Boolean = false
 )
 
 enum class ActionKind {
@@ -57,6 +61,7 @@ enum class ActionKind {
     SET_VARIABLE,
     ADD_VARIABLE,
     DESTROY_INSTANCE,
+    CREATE_INSTANCE,
     ROTATE,
     CALL_FUNCTION
 }
@@ -76,6 +81,7 @@ data class EventRow(
     val id: Long,
     val eventSheetId: Int = 1,
     val blockKind: EventBlockKind = EventBlockKind.EVENT,
+    val conditionJoin: ConditionJoin = ConditionJoin.AND,
     val name: String = "",
     val conditions: List<EventCondition> = listOf(EventCondition()),
     val actions: List<EventAction> = listOf(EventAction()),
@@ -90,7 +96,10 @@ data class RuntimeInput(
     val right: Boolean = false,
     val up: Boolean = false,
     val down: Boolean = false,
-    val jumpPressed: Boolean = false
+    val jumpPressed: Boolean = false,
+    val touchPressed: Boolean = false,
+    val touchX: Float = 0f,
+    val touchY: Float = 0f
 ) {
     fun keyDown(key: String) = when (key.uppercase()) {
         "ESQUERDA", "LEFT", "A" -> left
@@ -120,17 +129,25 @@ class GameRuntime(project: RuntimeProject) {
         .filter { it.visible && it.layoutId == project.activeLayoutId }
         .map { it.copy() }
         .toMutableList()
-    val layers = project.layers.associateBy { it.id }
+    private val templates = project.objects
+        .filter { it.layoutId == project.activeLayoutId }
+        .distinctBy { it.name }
+        .associateBy { it.name }
+    val layers = project.layers.filter { it.layoutId == project.activeLayoutId }.associateBy { it.id }
     val globalVariables = project.globalVariables.toMutableMap()
     private val events = project.events.filter { it.eventSheetId == project.activeEventSheetId }
+    private val localVariables = mutableMapOf<String, Float>()
+    private val functionLocalScopes = mutableMapOf<Long, MutableMap<String, Float>>()
     private var startPending = true
     private val previousInput = mutableSetOf<String>()
     private val verticalVelocity = mutableMapOf<Int, Float>()
     private val animationElapsed = mutableMapOf<Int, Float>()
     private val animationFrameIndex = mutableMapOf<Int, Int>()
-    var cameraX = 0f
+    var cameraX = width / 2f
         private set
-    var cameraY = 0f
+    var cameraY = height / 2f
+        private set
+    var cameraZoom = 1f
         private set
     var revision = 0
         private set
@@ -138,14 +155,20 @@ class GameRuntime(project: RuntimeProject) {
         private set
     var lastError: String? = null
         private set
+    var fps: Float = 0f
+        private set
+    val eventStates = mutableMapOf<Long, Boolean>()
 
     fun step(deltaSeconds: Float, input: RuntimeInput) {
         val dt = deltaSeconds.coerceIn(0f, 0.05f)
         if (dt <= 0f) return
-        val frameInput = input.copy(jumpPressed = input.jumpPressed && "PULAR" !in previousInput)
+        fps = if (fps == 0f) 1f / dt else fps * 0.9f + (1f / dt) * 0.1f
+        eventStates.clear()
+        val jumpInput = input.copy(jumpPressed = input.jumpPressed && "PULAR" !in previousInput)
+        val eventInput = input.copy(touchPressed = input.touchPressed && "TOUCH" !in previousInput)
         elapsedSeconds += dt
-        moveBehaviors(dt, frameInput)
-        runBlocks(events, frameInput)
+        moveBehaviors(dt, jumpInput)
+        runBlocks(events, eventInput, localVariables)
         advanceAnimations(dt)
         updateCamera()
         startPending = false
@@ -154,6 +177,7 @@ class GameRuntime(project: RuntimeProject) {
         if (input.up) previousInput.add("CIMA") else previousInput.remove("CIMA")
         if (input.down) previousInput.add("BAIXO") else previousInput.remove("BAIXO")
         if (input.jumpPressed) previousInput.add("PULAR") else previousInput.remove("PULAR")
+        if (input.touchPressed) previousInput.add("TOUCH") else previousInput.remove("TOUCH")
         revision++
     }
 
@@ -177,11 +201,10 @@ class GameRuntime(project: RuntimeProject) {
     }
 
     private fun moveBehaviors(dt: Float, input: RuntimeInput) {
-        objects.toList().forEach { instance ->
+        objects.forEach { instance ->
             if (instance.behaviors.isEmpty()) return@forEach
             val previousX = instance.x
             val previousY = instance.y
-            val behaviorKinds = instance.behaviors.mapTo(mutableSetOf()) { it.kind }
             val movement = instance.behaviors.firstOrNull {
                 it.kind == BehaviorKind.EIGHT_DIRECTION || it.kind == BehaviorKind.PLATFORM
             }
@@ -210,13 +233,13 @@ class GameRuntime(project: RuntimeProject) {
                     }
                 }
             }
-            if (BehaviorKind.BULLET in behaviorKinds) {
+            if (hasBehavior(instance, BehaviorKind.BULLET)) {
                 val bullet = instance.behaviors.first { it.kind == BehaviorKind.BULLET }
                 val radians = instance.rotation * (Math.PI.toFloat() / 180f)
                 instance.x += kotlin.math.cos(radians) * bullet.speed * dt
                 instance.y += kotlin.math.sin(radians) * bullet.speed * dt
             }
-            if (BehaviorKind.PHYSICS in behaviorKinds && movement == null) {
+            if (hasBehavior(instance, BehaviorKind.PHYSICS) && movement == null) {
                 val physics = instance.behaviors.first { it.kind == BehaviorKind.PHYSICS }
                 val velocity = (verticalVelocity[instance.id] ?: 0f) + physics.gravity * dt
                 verticalVelocity[instance.id] = velocity
@@ -227,7 +250,7 @@ class GameRuntime(project: RuntimeProject) {
                     verticalVelocity[instance.id] = 0f
                 }
             }
-            if (BehaviorKind.BOUND_TO_LAYOUT in behaviorKinds) {
+            if (hasBehavior(instance, BehaviorKind.BOUND_TO_LAYOUT)) {
                 instance.x = instance.x.coerceIn(0f, (width - instance.w).coerceAtLeast(0f))
                 instance.y = instance.y.coerceIn(0f, (height - instance.h).coerceAtLeast(0f))
             }
@@ -243,22 +266,20 @@ class GameRuntime(project: RuntimeProject) {
         }
 
     private fun resolveSolidCollisions(instance: LayoutObject, previousX: Float, previousY: Float) {
-        objects.asSequence()
-            .filter { it.id != instance.id && hasBehavior(it, BehaviorKind.SOLID) }
-            .filter { intersects(instance, it) }
-            .forEach { solid ->
-                if (previousY + instance.h <= solid.y && instance.y + instance.h > solid.y) {
-                    instance.y = solid.y - instance.h
-                    verticalVelocity[instance.id] = 0f
-                } else if (previousY >= solid.y + solid.h && instance.y < solid.y + solid.h) {
-                    instance.y = solid.y + solid.h
-                    verticalVelocity[instance.id] = 0f
-                } else if (previousX + instance.w <= solid.x && instance.x + instance.w > solid.x) {
-                    instance.x = solid.x - instance.w
-                } else if (previousX >= solid.x + solid.w && instance.x < solid.x + solid.w) {
-                    instance.x = solid.x + solid.w
-                }
+        for (solid in objects) {
+            if (solid.id == instance.id || !hasBehavior(solid, BehaviorKind.SOLID) || !intersects(instance, solid)) continue
+            if (previousY + instance.h <= solid.y && instance.y + instance.h > solid.y) {
+                instance.y = solid.y - instance.h
+                verticalVelocity[instance.id] = 0f
+            } else if (previousY >= solid.y + solid.h && instance.y < solid.y + solid.h) {
+                instance.y = solid.y + solid.h
+                verticalVelocity[instance.id] = 0f
+            } else if (previousX + instance.w <= solid.x && instance.x + instance.w > solid.x) {
+                instance.x = solid.x - instance.w
+            } else if (previousX >= solid.x + solid.w && instance.x < solid.x + solid.w) {
+                instance.x = solid.x + solid.w
             }
+        }
     }
 
     private fun runBlocks(
@@ -266,18 +287,35 @@ class GameRuntime(project: RuntimeProject) {
         input: RuntimeInput,
         localScope: MutableMap<String, Float> = mutableMapOf()
     ) {
+        var previousSiblingPassed = false
         for (event in blocks) {
-            if (!event.enabled) continue
+            if (!event.enabled) {
+                eventStates[event.id] = false
+                continue
+            }
             when (event.blockKind) {
-                EventBlockKind.COMMENT -> continue
+                EventBlockKind.COMMENT -> {
+                    eventStates[event.id] = false
+                    continue
+                }
                 EventBlockKind.GROUP -> {
+                    eventStates[event.id] = true
                     runBlocks(event.children, input, localScope)
                     continue
                 }
-                EventBlockKind.FUNCTION -> continue
+                EventBlockKind.FUNCTION -> {
+                    eventStates[event.id] = false
+                    continue
+                }
                 EventBlockKind.EVENT -> Unit
             }
-            if (event.conditions.all { evaluate(it, input, localScope) }) {
+            val passed = when (event.conditionJoin) {
+                ConditionJoin.AND -> event.conditions.all { evaluate(it, input, localScope, previousSiblingPassed) }
+                ConditionJoin.OR -> event.conditions.any { evaluate(it, input, localScope, previousSiblingPassed) }
+            }
+            previousSiblingPassed = passed
+            eventStates[event.id] = passed
+            if (passed) {
                 event.actions.forEach { execute(it, input, localScope) }
                 runBlocks(event.children, input, localScope)
             }
@@ -287,11 +325,15 @@ class GameRuntime(project: RuntimeProject) {
     private fun evaluate(
         condition: EventCondition,
         input: RuntimeInput,
-        localScope: Map<String, Float>
-    ): Boolean = when (condition.kind) {
+        localScope: Map<String, Float>,
+        previousSiblingPassed: Boolean
+    ): Boolean {
+        val result = when (condition.kind) {
         ConditionKind.ALWAYS -> true
         ConditionKind.START_OF_LAYOUT -> startPending
         ConditionKind.KEY_DOWN -> input.keyDown(condition.key)
+        ConditionKind.TOUCH -> input.touchPressed
+        ConditionKind.ELSE -> !previousSiblingPassed
         ConditionKind.VARIABLE_COMPARE -> {
             val name = condition.variable.removePrefix("local:").removePrefix("global:")
             val actual = if (condition.variable.startsWith("local:")) {
@@ -308,17 +350,23 @@ class GameRuntime(project: RuntimeProject) {
             }
         }
         ConditionKind.OVERLAP -> {
-            val first = objects.filter { it.name == condition.firstObject }
-            val second = objects.filter { it.name == condition.secondObject }
-            first.any { a -> second.any { b -> a.id != b.id && intersects(a, b) } }
+            objects.any { first ->
+                first.name == condition.firstObject && objects.any { second ->
+                    second.name == condition.secondObject && first.id != second.id && intersects(first, second)
+                }
+            }
         }
         ConditionKind.UNSUPPORTED -> false
+        }
+        return if (condition.inverted) !result else result
     }
 
     private fun execute(action: EventAction, input: RuntimeInput, localScope: MutableMap<String, Float>) {
         if (action.kind == ActionKind.CALL_FUNCTION) {
             val function = findFunction(events, action.functionName)
-            if (function != null) runBlocks(function.children, input, mutableMapOf())
+            if (function != null) {
+                runBlocks(function.children, input, functionLocalScopes.getOrPut(function.id) { mutableMapOf() })
+            }
             else lastError = "Função '${action.functionName}' não encontrada."
             return
         }
@@ -342,6 +390,21 @@ class GameRuntime(project: RuntimeProject) {
             }
             ActionKind.DESTROY_INSTANCE ->
                 objects.removeAll { action.targetName.isBlank() || it.name == action.targetName }
+            ActionKind.CREATE_INSTANCE -> {
+                val template = templates[action.targetName]
+                if (template == null) {
+                    lastError = "Não há instância-modelo '${action.targetName}' nesta cena."
+                } else {
+                    val nextId = (objects.maxOfOrNull { it.id } ?: 0) + 1
+                    objects += template.copy(
+                        id = nextId,
+                        x = value,
+                        y = valueY,
+                        behaviors = template.behaviors.toList(),
+                        animationFrames = template.animationFrames.toList()
+                    )
+                }
+            }
             ActionKind.MOVE_BY ->
                 targets.forEach { it.x += value; it.y += valueY }
             ActionKind.SET_POSITION ->
@@ -353,10 +416,17 @@ class GameRuntime(project: RuntimeProject) {
     }
 
     private fun updateCamera() {
-        objects.firstOrNull { hasBehavior(it, BehaviorKind.SCROLL_TO) }?.let {
-            cameraX = (it.x + it.w / 2f - width / 2f).coerceIn(0f, width.toFloat())
-            cameraY = (it.y + it.h / 2f - height / 2f).coerceIn(0f, height.toFloat())
-        }
+        val target = objects.firstOrNull { hasBehavior(it, BehaviorKind.SCROLL_TO) } ?: return
+        val camera = target.behaviors.first { it.kind == BehaviorKind.SCROLL_TO }
+        cameraZoom = camera.cameraZoom.coerceIn(0.25f, 4f)
+        val halfWidth = width / (2f * cameraZoom)
+        val halfHeight = height / (2f * cameraZoom)
+        cameraX = (target.x + target.w / 2f).coerceIn(
+            minOf(halfWidth, width / 2f), maxOf(width - halfWidth, width / 2f)
+        )
+        cameraY = (target.y + target.h / 2f).coerceIn(
+            minOf(halfHeight, height / 2f), maxOf(height - halfHeight, height / 2f)
+        )
     }
 
     private fun findFunction(blocks: List<EventRow>, name: String): EventRow? {

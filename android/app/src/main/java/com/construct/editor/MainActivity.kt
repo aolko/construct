@@ -11,9 +11,12 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -31,6 +34,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.center
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -38,6 +43,11 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -50,6 +60,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -76,26 +87,28 @@ data class LayoutObject(
     var w: Float,
     var h: Float,
     var layoutId: Int = 1,
+    var text: String = "",
     var rotation: Float = 0f,
     var layerId: Int = 1,
     var visible: Boolean = true,
     var assetId: Int = 0,
     var behaviors: List<BehaviorSpec> = emptyList(),
+    var animationName: String = "Parado",
     var animationFrames: List<AnimationFrame> = emptyList(),
     var frameDuration: Float = 0.15f
 )
 
 data class LayoutInfo(
-    var id: Int,
-    var name: String,
-    var width: Int = 640,
-    var height: Int = 480,
-    var eventSheetId: Int = 1
+    val id: Int,
+    val name: String,
+    val width: Int = 640,
+    val height: Int = 480,
+    val eventSheetId: Int = 1
 )
 
 data class ImageAsset(
     val id: Int,
-    val name: String,
+    var name: String,
     val mimeType: String,
     val base64: String
 )
@@ -105,6 +118,7 @@ private data class ProjectSnapshot(
     val width: Int,
     val height: Int,
     val layouts: List<LayoutInfo>,
+    val startLayoutId: Int,
     val objectTypes: List<String>,
     val layers: List<LayerModel>,
     val objects: List<LayoutObject>,
@@ -117,23 +131,44 @@ class EditorState {
     var projectName by mutableStateOf("Projeto sem título")
     var width by mutableStateOf(640)
     var height by mutableStateOf(480)
-    var objectTypes by mutableStateOf(listOf("Imagem", "Fundo quadriculado", "Texto"))
+    var objectTypes by mutableStateOf(listOf("Imagem", "Texto"))
     var layouts by mutableStateOf(listOf(LayoutInfo(1, "Cena 1", 640, 480, 1)))
     var activeLayoutId by mutableIntStateOf(1)
-    var objects by mutableStateOf(listOf(
-        LayoutObject(1, "Imagem 1", "Sprite", 160f, 120f, 96f, 96f, layoutId = 1),
-        LayoutObject(2, "Texto 1", "Text", 320f, 80f, 180f, 48f, layoutId = 1)
-    ))
+    var startLayoutId by mutableIntStateOf(1)
+    var objects by mutableStateOf(emptyList<LayoutObject>())
     var events by mutableStateOf(emptyList<EventRow>())
     var layers by mutableStateOf(listOf(LayerModel(1, "Principal")))
     var globalVariables by mutableStateOf(mapOf("pontuacao" to 0f))
     var assets by mutableStateOf(emptyList<ImageAsset>())
     var animationTargetId by mutableIntStateOf(0)
     var nextEventId by mutableLongStateOf(1L)
-    var selectedId by mutableStateOf(1)
+    var selectedId by mutableStateOf(0)
     var modified by mutableStateOf(false)
     var notice by mutableStateOf("Novo projeto")
     var objectRevision by mutableIntStateOf(0)
+
+    fun activeLayerId() = layers.firstOrNull { it.layoutId == activeLayoutId }?.id ?: 1
+
+    fun createNewProject() {
+        projectName = "Projeto sem título"
+        width = 640
+        height = 480
+        objectTypes = listOf("Imagem", "Texto")
+        layouts = listOf(LayoutInfo(1, "Cena 1", width, height, 1))
+        activeLayoutId = 1
+        startLayoutId = 1
+        objects = emptyList()
+        events = emptyList()
+        layers = listOf(LayerModel(1, "Principal", layoutId = 1))
+        globalVariables = emptyMap()
+        assets = emptyList()
+        selectedId = 0
+        animationTargetId = 0
+        nextEventId = 1L
+        modified = false
+        notice = "Novo projeto"
+        objectRevision++
+    }
 
     fun markObjectsChanged() {
         objectRevision++
@@ -154,8 +189,8 @@ class MainActivity : ComponentActivity() {
     private val saveProject = registerForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
         uri?.let { saveUri(it) }
     }
-    private val importImage = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let(::importImage)
+    private val importImage = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) importImages(uris)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -173,10 +208,13 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun importImage(uri: Uri) = lifecycleScope.launch {
-        state.notice = "Importando imagem…"
+    private fun importImages(uris: List<Uri>) = lifecycleScope.launch {
+        state.notice = "Importando ${uris.size} imagem(ns)…"
+        val animationTargetId = state.animationTargetId
         try {
-            val asset = withContext(Dispatchers.IO) {
+            for (uri in uris) {
+                val assetId = (state.assets.maxOfOrNull { it.id } ?: 0) + 1
+                val asset = withContext(Dispatchers.IO) {
                 val source = requireNotNull(contentResolver.openInputStream(uri)) {
                     "Não foi possível ler a imagem."
                 }.use { it.readBytes() }
@@ -198,28 +236,29 @@ class MainActivity : ComponentActivity() {
                 }
                 bitmap.recycle()
                 ImageAsset(
-                    id = (state.assets.maxOfOrNull { it.id } ?: 0) + 1,
+                    id = assetId,
                     name = uri.lastPathSegment?.substringAfterLast('/') ?: "Imagem",
                     mimeType = "image/png",
                     base64 = encoded
                 )
+                }
+                state.assets = state.assets + asset
+                val animationTarget = state.objects.firstOrNull { it.id == animationTargetId }
+                if (animationTarget != null) {
+                    animationTarget.animationFrames = animationTarget.animationFrames + AnimationFrame(asset.id)
+                    state.markObjectsChanged()
+                } else {
+                    val objectId = (state.objects.maxOfOrNull { it.id } ?: 0) + 1
+                    state.objects = state.objects + LayoutObject(
+                        objectId, asset.name.substringBeforeLast('.'), "Sprite",
+                        220f, 180f, 128f, 128f, layoutId = state.activeLayoutId,
+                        layerId = state.activeLayerId(), assetId = asset.id
+                    )
+                    state.selectedId = objectId
+                    state.markObjectsChanged()
+                }
             }
-            state.assets = state.assets + asset
-            val animationTarget = state.objects.firstOrNull { it.id == state.animationTargetId }
-            if (animationTarget != null) {
-                animationTarget.animationFrames = animationTarget.animationFrames + AnimationFrame(asset.id)
-                state.markObjectsChanged()
-                state.notice = "Quadro adicionado: ${asset.name}"
-            } else {
-                val objectId = (state.objects.maxOfOrNull { it.id } ?: 0) + 1
-                state.objects = state.objects + LayoutObject(
-                    objectId, asset.name.substringBeforeLast('.'), "Sprite",
-                    220f, 180f, 128f, 128f, layoutId = state.activeLayoutId, assetId = asset.id
-                )
-                state.selectedId = objectId
-                state.markObjectsChanged()
-                state.notice = "Imagem importada: ${asset.name}"
-            }
+            state.notice = if (animationTargetId != 0) "Quadro(s) importado(s)" else "Imagem(ns) importada(s)"
         } catch (error: Exception) {
             state.notice = "Falha ao importar imagem: ${error.message ?: "erro desconhecido"}"
         } finally {
@@ -288,18 +327,20 @@ class MainActivity : ComponentActivity() {
         width = state.width,
         height = state.height,
         layouts = state.layouts.toList(),
+        startLayoutId = state.startLayoutId,
         objectTypes = state.objectTypes.toList(),
         layers = state.layers.map { it.copy() },
         objects = state.objects.map { it.copy() },
         events = state.events.map { it.copy(conditions = it.conditions.toList(), actions = it.actions.toList(), children = it.children.toList()) },
         globalVariables = state.globalVariables.toMap(),
-        assets = state.assets.toList()
+        assets = state.assets.map { it.copy() }
     )
 
     private fun serializeEvent(event: EventRow): JSONObject = JSONObject()
         .put("id", event.id)
         .put("eventSheetId", event.eventSheetId)
         .put("blockKind", event.blockKind.name)
+        .put("conditionJoin", event.conditionJoin.name)
         .put("name", event.name)
         .put("enabled", event.enabled)
         .put("legacyCondition", event.legacyCondition)
@@ -309,7 +350,8 @@ class MainActivity : ComponentActivity() {
                 array.put(JSONObject().put("kind", condition.kind.name).put("key", condition.key)
                     .put("variable", condition.variable).put("compare", condition.compare.name)
                     .put("value", condition.value).put("firstObject", condition.firstObject)
-                    .put("secondObject", condition.secondObject).put("valueExpression", condition.valueExpression))
+                    .put("secondObject", condition.secondObject).put("valueExpression", condition.valueExpression)
+                    .put("inverted", condition.inverted))
             }
         })
         .put("actions", JSONArray().also { array ->
@@ -335,7 +377,8 @@ class MainActivity : ComponentActivity() {
                     value = value.optDouble("value").toFloat(),
                     firstObject = value.optString("firstObject"),
                     secondObject = value.optString("secondObject"),
-                    valueExpression = value.optString("valueExpression")
+                    valueExpression = value.optString("valueExpression"),
+                    inverted = value.optBoolean("inverted", false)
                 )
             }
         } ?: listOf(EventCondition(ConditionKind.UNSUPPORTED))
@@ -362,6 +405,7 @@ class MainActivity : ComponentActivity() {
             id = json.optLong("id", System.nanoTime()),
             eventSheetId = json.optInt("eventSheetId", 1),
             blockKind = enumValue(json.optString("blockKind"), EventBlockKind.EVENT),
+            conditionJoin = enumValue(json.optString("conditionJoin"), ConditionJoin.AND),
             name = json.optString("name"),
             conditions = conditions,
             actions = actions,
@@ -380,7 +424,8 @@ class MainActivity : ComponentActivity() {
                 kind = enumValue(behavior.optString("kind"), BehaviorKind.EIGHT_DIRECTION),
                 speed = behavior.optDouble("speed", 180.0).toFloat(),
                 gravity = behavior.optDouble("gravity", 900.0).toFloat(),
-                jumpStrength = behavior.optDouble("jumpStrength", 380.0).toFloat()
+                jumpStrength = behavior.optDouble("jumpStrength", 380.0).toFloat(),
+                cameraZoom = behavior.optDouble("cameraZoom", 1.0).toFloat()
             )
         }
     }
@@ -400,13 +445,16 @@ class MainActivity : ComponentActivity() {
                 .put("id", o.id).put("name", o.name).put("plugin", o.plugin)
                 .put("x", o.x).put("y", o.y).put("w", o.w).put("h", o.h)
                 .put("layoutId", o.layoutId)
+                .put("text", o.text)
                 .put("rotation", o.rotation).put("layerId", o.layerId).put("visible", o.visible)
                 .put("assetId", o.assetId)
+                .put("animationName", o.animationName)
                 .put("frameDuration", o.frameDuration)
                 .put("behaviors", JSONArray().also { behaviors ->
                     o.behaviors.forEach { b ->
                         behaviors.put(JSONObject().put("kind", b.kind.name)
-                            .put("speed", b.speed).put("gravity", b.gravity).put("jumpStrength", b.jumpStrength))
+                            .put("speed", b.speed).put("gravity", b.gravity).put("jumpStrength", b.jumpStrength)
+                            .put("cameraZoom", b.cameraZoom))
                     }
                 })
                 .put("animationFrames", JSONArray().also { frames ->
@@ -421,6 +469,7 @@ class MainActivity : ComponentActivity() {
         val layers = JSONArray()
         project.layers.forEach { layer ->
             layers.put(JSONObject().put("id", layer.id).put("name", layer.name)
+            .put("layoutId", layer.layoutId)
                 .put("visible", layer.visible).put("opacity", layer.opacity)
                 .put("scrollX", layer.scrollX).put("scrollY", layer.scrollY))
         }
@@ -445,6 +494,7 @@ class MainActivity : ComponentActivity() {
             .put("name", project.name)
             .put("width", project.width).put("height", project.height)
             .put("layouts", layouts)
+            .put("startLayoutId", project.startLayoutId)
             .put("objectTypes", JSONArray(project.objectTypes))
             .put("layers", layers).put("objects", objects).put("events", events)
             .put("globalVariables", variables).put("assets", assets)
@@ -471,7 +521,7 @@ class MainActivity : ComponentActivity() {
         } ?: listOf(LayoutInfo(1, "Cena 1", 640, 480, 1))
         val objectTypes = root.optJSONArray("objectTypes")?.let { values ->
             List(values.length()) { values.getString(it) }
-        } ?: listOf("Imagem", "Fundo quadriculado", "Texto")
+        } ?: listOf("Imagem", "Texto")
         val loadedObjects = mutableListOf<LayoutObject>()
         val array = root.optJSONArray("objects") ?: JSONArray()
         for (i in 0 until array.length()) {
@@ -480,10 +530,12 @@ class MainActivity : ComponentActivity() {
                 o.optDouble("x").toFloat(), o.optDouble("y").toFloat(),
                 o.optDouble("w").toFloat(), o.optDouble("h").toFloat(),
                 layoutId = o.optInt("layoutId", 1),
+                text = o.optString("text", if (o.optString("plugin") == "Text") o.optString("name") else ""),
                 rotation = o.optDouble("rotation").toFloat(),
                 layerId = o.optInt("layerId", 1),
                 visible = o.optBoolean("visible", true),
                 assetId = o.optInt("assetId", 0),
+                animationName = o.optString("animationName", "Parado"),
                 behaviors = readBehaviors(o.optJSONArray("behaviors")),
                 frameDuration = o.optDouble("frameDuration", 0.15).toFloat(),
                 animationFrames = readAnimationFrames(o.optJSONArray("animationFrames")))
@@ -497,11 +549,27 @@ class MainActivity : ComponentActivity() {
         val loadedLayers = root.optJSONArray("layers")?.let { values ->
             List(values.length()) { index ->
                 val layer = values.getJSONObject(index)
-                LayerModel(layer.optInt("id", index + 1), layer.optString("name", "Camada ${index + 1}"),
-                    layer.optBoolean("visible", true), layer.optDouble("opacity", 1.0).toFloat(),
-                    layer.optDouble("scrollX", 1.0).toFloat(), layer.optDouble("scrollY", 1.0).toFloat())
+                LayerModel(
+                    id = layer.optInt("id", index + 1),
+                    name = layer.optString("name", "Camada ${index + 1}"),
+                    layoutId = layer.optInt("layoutId", 1),
+                    visible = layer.optBoolean("visible", true),
+                    opacity = layer.optDouble("opacity", 1.0).toFloat(),
+                    scrollX = layer.optDouble("scrollX", 1.0).toFloat(),
+                    scrollY = layer.optDouble("scrollY", 1.0).toFloat()
+                )
             }.ifEmpty { listOf(LayerModel(1, "Principal")) }
         } ?: listOf(LayerModel(1, "Principal"))
+        val layersWithLayouts = loadedLayers.toMutableList()
+        layouts.forEach { layout ->
+            if (layersWithLayouts.none { it.layoutId == layout.id }) {
+                layersWithLayouts += LayerModel(
+                    id = (layersWithLayouts.maxOfOrNull { it.id } ?: 0) + 1,
+                    name = "Principal",
+                    layoutId = layout.id
+                )
+            }
+        }
         val variablesJson = root.optJSONObject("globalVariables") ?: JSONObject()
         val variables = buildMap {
             variablesJson.keys().forEach { key -> put(key, variablesJson.optDouble(key).toFloat()) }
@@ -518,8 +586,9 @@ class MainActivity : ComponentActivity() {
             width = root.optInt("width", 640),
             height = root.optInt("height", 480),
             layouts = layouts,
+            startLayoutId = root.optInt("startLayoutId", layouts.firstOrNull()?.id ?: 1),
             objectTypes = objectTypes,
-            layers = loadedLayers,
+            layers = layersWithLayouts,
             objects = loadedObjects,
             events = loadedEvents,
             globalVariables = variables,
@@ -533,6 +602,7 @@ class MainActivity : ComponentActivity() {
         state.height = project.height
         state.layouts = project.layouts
         state.activeLayoutId = project.layouts.firstOrNull()?.id ?: 1
+        state.startLayoutId = project.startLayoutId
         state.width = project.layouts.firstOrNull()?.width ?: project.width
         state.height = project.layouts.firstOrNull()?.height ?: project.height
         state.objectTypes = project.objectTypes
@@ -576,11 +646,14 @@ fun ConstructApp(
 ) {
     var tab by remember { mutableStateOf(0) }
     var panel by remember { mutableStateOf("Objetos") }
+    var showDesktopLeftPanel by remember { mutableStateOf(false) }
     var showMobilePanel by remember { mutableStateOf(false) }
     var showDesktopPanel by remember { mutableStateOf(true) }
+    var navigationExpanded by remember { mutableStateOf(true) }
     var showGame by remember { mutableStateOf(false) }
     var debugGame by remember { mutableStateOf(false) }
-    val compactScreen = LocalConfiguration.current.screenWidthDp < 840
+    var runLayoutId by remember { mutableIntStateOf(state.activeLayoutId) }
+    val compactScreen = LocalConfiguration.current.screenWidthDp < 600
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     Scaffold(
         topBar = {
@@ -595,9 +668,15 @@ fun ConstructApp(
                 actions = {
                     IconButton(onClick = {
                         debugGame = false
+                        runLayoutId = state.activeLayoutId
                         showGame = true
                     }) { Icon(Icons.Default.PlayArrow, contentDescription = "Executar cena") }
                     if (tab == 0) {
+                        if (!compactScreen) {
+                            IconButton(onClick = { showDesktopLeftPanel = !showDesktopLeftPanel }) {
+                                Icon(Icons.Default.AccountTree, contentDescription = "Abrir Project Bar")
+                            }
+                        }
                         IconButton(onClick = {
                             if (compactScreen) showMobilePanel = true else showDesktopPanel = !showDesktopPanel
                         }) {
@@ -610,32 +689,84 @@ fun ConstructApp(
             )
         },
         bottomBar = {
-            NavigationBar {
-                NavigationBarItem(
-                    selected = tab == 0, onClick = { tab = 0 },
-                    icon = { Icon(Icons.Default.GridOn, null) }, label = { Text("Cena") })
-                NavigationBarItem(
-                    selected = tab == 1, onClick = { tab = 1; showMobilePanel = false },
-                    icon = { Icon(Icons.Default.AccountTree, null) }, label = { Text("Eventos") })
-                NavigationBarItem(
-                    selected = tab == 2, onClick = { tab = 2; showMobilePanel = false },
-                    icon = { Icon(Icons.Default.Movie, null) }, label = { Text("Animações") })
-                NavigationBarItem(
-                    selected = tab == 3, onClick = { tab = 3; showMobilePanel = false },
-                    icon = { Icon(Icons.Default.PhotoLibrary, null) }, label = { Text("Projeto") })
+            Column {
+                Box(
+                    Modifier.fillMaxWidth().height(18.dp).background(MaterialTheme.colorScheme.surfaceVariant)
+                        .pointerInput(navigationExpanded) {
+                            var dragDistance = 0f
+                            detectVerticalDragGestures(
+                                onVerticalDrag = { change, amount ->
+                                    dragDistance += amount
+                                    if (dragDistance > 24f && navigationExpanded) {
+                                        navigationExpanded = false
+                                        dragDistance = 0f
+                                    } else if (dragDistance < -24f && !navigationExpanded) {
+                                        navigationExpanded = true
+                                        dragDistance = 0f
+                                    }
+                                    change.consume()
+                                },
+                                onDragEnd = { dragDistance = 0f }
+                            )
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        if (navigationExpanded) Icons.Default.ExpandMore else Icons.Default.ExpandLess,
+                        contentDescription = if (navigationExpanded) "Recolher ferramentas" else "Expandir ferramentas",
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                if (navigationExpanded) {
+                    NavigationBar {
+                        NavigationBarItem(
+                            selected = tab == 0, onClick = { tab = 0 },
+                            icon = { Icon(Icons.Default.GridOn, null) }, label = { Text("Cena") })
+                        NavigationBarItem(
+                            selected = tab == 1, onClick = { tab = 1; showMobilePanel = false },
+                            icon = { Icon(Icons.Default.AccountTree, null) }, label = { Text("Eventos") })
+                        NavigationBarItem(
+                            selected = tab == 2, onClick = { tab = 2; showMobilePanel = false },
+                            icon = { Icon(Icons.Default.Movie, null) }, label = { Text("Animações") })
+                        NavigationBarItem(
+                            selected = tab == 3, onClick = { tab = 3; showMobilePanel = false },
+                            icon = { Icon(Icons.Default.PhotoLibrary, null) }, label = { Text("Projeto") })
+                    }
+                }
             }
         }
     ) { padding ->
         BoxWithConstraints(modifier = Modifier.fillMaxSize().padding(padding)) {
-            val compact = maxWidth < 840.dp
-            val panelWidth = if (maxWidth >= 1000.dp) 300.dp else 250.dp
+            val compact = maxWidth < 600.dp
+            val panelWidth = if (maxWidth >= 1000.dp) 280.dp else 240.dp
             if (tab == 0) {
                 Row(modifier = Modifier.fillMaxSize()) {
+                    if (!compact && showDesktopLeftPanel) {
+                        ProjectBar(
+                            state = state,
+                            onImport = onImport,
+                            modifier = Modifier.width(panelWidth)
+                        )
+                    }
+                    if (!compact) {
+                        PanelDragHandle(
+                            isOpen = showDesktopLeftPanel,
+                            opensTowardRight = true,
+                            onToggle = { showDesktopLeftPanel = !showDesktopLeftPanel }
+                        )
+                    }
                     Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
                         LayoutEditor(state) {
                             panel = "Propriedades"
                             if (compact) showMobilePanel = true else showDesktopPanel = true
                         }
+                    }
+                    if (!compact) {
+                        PanelDragHandle(
+                            isOpen = showDesktopPanel,
+                            opensTowardRight = false,
+                            onToggle = { showDesktopPanel = !showDesktopPanel }
+                        )
                     }
                     if (!compact && showDesktopPanel) {
                         PropertiesPanel(
@@ -653,8 +784,12 @@ fun ConstructApp(
                     2 -> AnimationEditor(state, onImport, Modifier.fillMaxSize())
                     3 -> ProjectManager(
                         state, Modifier.fillMaxSize(),
-                        onRunProject = { debugGame = false; showGame = true },
-                        onDebugLayout = { debugGame = true; showGame = true }
+                        onRunProject = { debugGame = false; runLayoutId = state.startLayoutId; showGame = true },
+                        onDebugLayout = { debugGame = true; runLayoutId = state.activeLayoutId; showGame = true },
+                        onNewProject = {
+                            state.createNewProject()
+                            tab = 0
+                        }
                     )
                 }
             }
@@ -673,7 +808,7 @@ fun ConstructApp(
                 }
             }
             if (showGame) {
-                val activeLayout = state.layouts.firstOrNull { it.id == state.activeLayoutId } ?: state.layouts.firstOrNull()
+                val activeLayout = state.layouts.firstOrNull { it.id == runLayoutId } ?: state.layouts.firstOrNull()
                 val runtimeWidth = activeLayout?.width ?: state.width
                 val runtimeHeight = activeLayout?.height ?: state.height
                 val runtimeObjects = state.objects.filter { it.layoutId == (activeLayout?.id ?: 1) }
@@ -712,6 +847,119 @@ fun ConstructApp(
 }
 
 @Composable
+private fun PanelDragHandle(
+    isOpen: Boolean,
+    opensTowardRight: Boolean,
+    onToggle: () -> Unit
+) {
+    Surface(
+        Modifier.width(18.dp).fillMaxHeight(),
+        color = MaterialTheme.colorScheme.surfaceVariant
+    ) {
+        Box(
+            Modifier.fillMaxSize().pointerInput(isOpen, opensTowardRight) {
+                var dragDistance = 0f
+                var toggled = false
+                detectHorizontalDragGestures(
+                    onHorizontalDrag = { change, amount ->
+                        dragDistance += amount
+                        val shouldOpen = if (opensTowardRight) dragDistance > 24f else dragDistance < -24f
+                        val shouldClose = if (opensTowardRight) dragDistance < -24f else dragDistance > 24f
+                        if (!toggled && ((!isOpen && shouldOpen) || (isOpen && shouldClose))) {
+                            onToggle()
+                            toggled = true
+                        }
+                        change.consume()
+                    },
+                    onDragEnd = {
+                        dragDistance = 0f
+                        toggled = false
+                    },
+                    onDragCancel = {
+                        dragDistance = 0f
+                        toggled = false
+                    }
+                )
+            },
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(Icons.Default.DragHandle, contentDescription = "Arraste para abrir ou fechar painel")
+        }
+    }
+}
+
+@Composable
+private fun ProjectBar(state: EditorState, onImport: () -> Unit, modifier: Modifier = Modifier) {
+    Surface(modifier.fillMaxHeight(), tonalElevation = 2.dp) {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(8.dp)) {
+            Text("Projeto", style = MaterialTheme.typography.titleMedium)
+            Text("Cenas", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 8.dp))
+            state.layouts.forEach { layout ->
+                TextButton(
+                    onClick = {
+                        state.activeLayoutId = layout.id
+                        state.width = layout.width
+                        state.height = layout.height
+                        state.selectedId = state.objects.firstOrNull { it.layoutId == layout.id }?.id ?: 0
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        if (state.activeLayoutId == layout.id) Icons.Default.GridOn else Icons.Default.GridView,
+                        contentDescription = null
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(layout.name, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            HorizontalDivider()
+            Text("Instâncias", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 8.dp))
+            state.objects.filter { it.layoutId == state.activeLayoutId }.forEach { obj ->
+                TextButton(
+                    onClick = { state.selectedId = obj.id },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Category, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text(obj.name, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            HorizontalDivider()
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Recursos", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+                IconButton(onClick = onImport) {
+                    Icon(Icons.Default.AddPhotoAlternate, contentDescription = "Importar imagem")
+                }
+            }
+            state.assets.forEach { asset ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = asset.name,
+                        onValueChange = { name ->
+                            asset.name = name
+                            state.assets = state.assets.toList()
+                            state.markProjectChanged()
+                        },
+                        singleLine = true,
+                        label = { Text("Recurso") },
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(onClick = {
+                        state.assets = state.assets.filterNot { it.id == asset.id }
+                        state.objects.forEach { obj ->
+                            if (obj.assetId == asset.id) obj.assetId = 0
+                            obj.animationFrames = obj.animationFrames.filterNot { it.assetId == asset.id }
+                        }
+                        state.markObjectsChanged()
+                    }) { Icon(Icons.Default.Delete, contentDescription = "Excluir recurso ${asset.name}") }
+                }
+            }
+            if (state.assets.isEmpty()) Text("Nenhum recurso importado.", style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
 private fun PropertiesPanel(
             state: EditorState,
             panel: String,
@@ -743,7 +991,10 @@ private fun PropertiesPanel(
                                 modifier = Modifier.weight(1f))
                             IconButton(onClick = {
                                 val id = (state.objects.maxOfOrNull { it.id } ?: 0) + 1
-                                val obj = LayoutObject(id, "Imagem $id", "Sprite", 200f, 160f, 96f, 96f, layoutId = state.activeLayoutId)
+                                val obj = LayoutObject(
+                                    id, "Imagem $id", "Sprite", 200f, 160f, 96f, 96f,
+                                    layoutId = state.activeLayoutId, layerId = state.activeLayerId()
+                                )
                                 state.objects = state.objects + obj
                                 state.selectedId = id
                                 state.markObjectsChanged()
@@ -752,16 +1003,31 @@ private fun PropertiesPanel(
                         }
                         LazyColumn(modifier = Modifier.weight(1f)) {
                             items(state.objectTypes) { type ->
-                                TextButton(onClick = {
-                                    val id = (state.objects.maxOfOrNull { it.id } ?: 0) + 1
-                                    val obj = LayoutObject(id, "$type $id", pluginForType(type), 180f, 140f, 128f, 96f, layoutId = state.activeLayoutId)
-                                    state.objects = state.objects + obj
-                                    state.selectedId = id
-                                    state.markObjectsChanged()
-                                }, modifier = Modifier.fillMaxWidth()) {
-                                    Icon(Icons.Default.Category, null)
-                                    Spacer(Modifier.width(8.dp))
-                                    Text(type, modifier = Modifier.weight(1f))
+                                if (type in setOf("Imagem", "Sprite", "Texto", "Text")) {
+                                    TextButton(onClick = {
+                                        val id = (state.objects.maxOfOrNull { it.id } ?: 0) + 1
+                                        val plugin = pluginForType(type)
+                                        val obj = LayoutObject(
+                                            id, "$type $id", plugin, 180f, 140f, 128f, 96f,
+                                            layoutId = state.activeLayoutId,
+                                            layerId = state.activeLayerId(),
+                                            text = if (plugin == "Text") "Texto" else ""
+                                        )
+                                        state.objects = state.objects + obj
+                                        state.selectedId = id
+                                        state.markObjectsChanged()
+                                    }, modifier = Modifier.fillMaxWidth()) {
+                                        Icon(Icons.Default.Category, null)
+                                        Spacer(Modifier.width(8.dp))
+                                        Text(type, modifier = Modifier.weight(1f))
+                                    }
+                                } else {
+                                    Text(
+                                        "$type — não compatível para criação; dados existentes são preservados",
+                                        modifier = Modifier.fillMaxWidth().padding(8.dp),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
                                 }
                             }
                         }
@@ -785,6 +1051,17 @@ private fun PropertiesPanel(
                                     label = { Text("Nome") },
                                     modifier = Modifier.fillMaxWidth()
                                 )
+                                if (selected.plugin == "Text") {
+                                    OutlinedTextField(
+                                        value = selected.text,
+                                        onValueChange = {
+                                            selected.text = it
+                                            state.markObjectsChanged()
+                                        },
+                                        label = { Text("Texto exibido") },
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
                                 Spacer(Modifier.height(6.dp))
                                 OutlinedTextField(
                                     value = selected.plugin,
@@ -807,10 +1084,14 @@ private fun PropertiesPanel(
                                 }
                                 Text("Camada", style = MaterialTheme.typography.labelLarge)
                                 EnumChoice(
-                                    label = state.layers.firstOrNull { it.id == selected.layerId }?.name ?: "Principal",
-                                    options = state.layers.map { it.name }
+                                    label = state.layers.firstOrNull {
+                                        it.id == selected.layerId && it.layoutId == state.activeLayoutId
+                                    }?.name ?: "Principal",
+                                    options = state.layers.filter { it.layoutId == state.activeLayoutId }.map { it.name }
                                 ) { name ->
-                                    selected.layerId = state.layers.firstOrNull { it.name == name }?.id ?: selected.layerId
+                                    selected.layerId = state.layers.firstOrNull {
+                                        it.layoutId == state.activeLayoutId && it.name == name
+                                    }?.id ?: selected.layerId
                                     state.markObjectsChanged()
                                 }
                                 Text("Comportamentos", style = MaterialTheme.typography.titleSmall,
@@ -872,6 +1153,27 @@ private fun PropertiesPanel(
                                         modifier = Modifier.fillMaxWidth()
                                     )
                                 }
+                                selected.behaviors.firstOrNull { it.kind == BehaviorKind.SCROLL_TO }?.let { camera ->
+                                    var zoomText by remember(selected.id, camera.cameraZoom) {
+                                        mutableStateOf(camera.cameraZoom.toString())
+                                    }
+                                    OutlinedTextField(
+                                        value = zoomText,
+                                        onValueChange = { text ->
+                                            zoomText = text
+                                            text.toFloatOrNull()?.let { zoom ->
+                                                selected.behaviors = selected.behaviors.map {
+                                                    if (it.kind == BehaviorKind.SCROLL_TO) {
+                                                        it.copy(cameraZoom = zoom.coerceIn(0.25f, 4f))
+                                                    } else it
+                                                }
+                                                state.markObjectsChanged()
+                                            }
+                                        },
+                                        label = { Text("Zoom da câmera (0,25–4)") },
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
                                 OutlinedButton(onClick = {
                                     state.objects = state.objects.filter { it.id != selected.id }
                                     state.selectedId = state.objects.firstOrNull()?.id ?: 0
@@ -886,31 +1188,80 @@ private fun PropertiesPanel(
 
         @Composable
         private fun LayerPanel(state: EditorState) {
+            val sceneLayers = state.layers.filter { it.layoutId == state.activeLayoutId }
             Column(Modifier.fillMaxWidth()) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Camadas da cena", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                     IconButton(onClick = {
                         val nextId = (state.layers.maxOfOrNull { it.id } ?: 0) + 1
-                        state.layers = state.layers + LayerModel(nextId, "Camada $nextId")
+                        state.layers = state.layers + LayerModel(
+                            id = nextId,
+                            name = "Camada $nextId",
+                            layoutId = state.activeLayoutId
+                        )
                         state.markProjectChanged()
                     }) { Icon(Icons.Default.Add, contentDescription = "Adicionar camada") }
                 }
                 LazyColumn(Modifier.weight(1f)) {
-                    items(state.layers, key = { it.id }) { layer ->
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                            IconButton(onClick = {
-                                state.layers = state.layers.map {
-                                    if (it.id == layer.id) it.copy(visible = !it.visible) else it
+                    items(sceneLayers, key = { it.id }) { layer ->
+                        Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(onClick = {
+                                    state.layers = state.layers.map {
+                                        if (it.id == layer.id) it.copy(visible = !it.visible) else it
+                                    }
+                                    state.markProjectChanged()
+                                }) {
+                                    Icon(
+                                        if (layer.visible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                        contentDescription = if (layer.visible) "Ocultar camada" else "Mostrar camada"
+                                    )
                                 }
-                                state.markProjectChanged()
-                            }) {
-                                Icon(
-                                    if (layer.visible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
-                                    contentDescription = if (layer.visible) "Ocultar camada" else "Mostrar camada"
+                                var layerName by remember(layer.id, layer.name) { mutableStateOf(layer.name) }
+                                OutlinedTextField(
+                                    value = layerName,
+                                    onValueChange = { name ->
+                                        layerName = name
+                                        state.layers = state.layers.map {
+                                            if (it.id == layer.id) it.copy(name = name) else it
+                                        }
+                                        state.markProjectChanged()
+                                    },
+                                    singleLine = true,
+                                    label = { Text("Camada") },
+                                    modifier = Modifier.weight(1f)
                                 )
+                                Text("${state.objects.count {
+                                    it.layoutId == state.activeLayoutId && it.layerId == layer.id
+                                }}")
+                                IconButton(
+                                    enabled = sceneLayers.size > 1,
+                                    onClick = {
+                                        val fallback = sceneLayers.first { it.id != layer.id }
+                                        state.objects.forEach { obj ->
+                                            if (obj.layoutId == state.activeLayoutId && obj.layerId == layer.id) {
+                                                obj.layerId = fallback.id
+                                            }
+                                        }
+                                        state.layers = state.layers.filterNot { it.id == layer.id }
+                                        state.markObjectsChanged()
+                                    }
+                                ) { Icon(Icons.Default.Delete, contentDescription = "Excluir camada") }
                             }
-                            Text(layer.name, Modifier.weight(1f))
-                            Text("${state.objects.count { it.layerId == layer.id }}")
+                            Row(Modifier.fillMaxWidth()) {
+                                PropertyNumber("Parallax X", layer.scrollX, Modifier.weight(1f)) { value ->
+                                    state.layers = state.layers.map {
+                                        if (it.id == layer.id) it.copy(scrollX = value.coerceIn(0f, 4f)) else it
+                                    }
+                                    state.markProjectChanged()
+                                }
+                                PropertyNumber("Parallax Y", layer.scrollY, Modifier.weight(1f)) { value ->
+                                    state.layers = state.layers.map {
+                                        if (it.id == layer.id) it.copy(scrollY = value.coerceIn(0f, 4f)) else it
+                                    }
+                                    state.markProjectChanged()
+                                }
+                            }
                         }
                     }
                 }
@@ -920,16 +1271,37 @@ private fun PropertiesPanel(
         @Composable
         private fun EnumChoice(label: String, options: List<String>, onSelected: (String) -> Unit) {
             var expanded by remember { mutableStateOf(false) }
+            var query by remember { mutableStateOf("") }
             Box {
-                OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                OutlinedButton(
+                    onClick = { query = ""; expanded = true },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                ) {
                     Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                    options.forEach { option ->
-                        DropdownMenuItem(
-                            text = { Text(option) },
-                            onClick = { onSelected(option); expanded = false }
+                    Column(
+                        Modifier.widthIn(min = 220.dp, max = 360.dp).heightIn(max = 400.dp)
+                            .verticalScroll(rememberScrollState()).padding(horizontal = 8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = query,
+                            onValueChange = { query = it },
+                            placeholder = { Text("Pesquisar opções") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
                         )
+                        val filtered = options.filter { it.contains(query, ignoreCase = true) }
+                        if (filtered.isEmpty()) {
+                            Text("Nenhuma opção encontrada.", Modifier.padding(12.dp))
+                        } else {
+                            filtered.forEach { option ->
+                                DropdownMenuItem(
+                                    text = { Text(option) },
+                                    onClick = { onSelected(option); expanded = false }
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -963,10 +1335,17 @@ private fun PropertyNumber(label: String, value: Float, modifier: Modifier = Mod
 private fun EventEditor(state: EditorState, modifier: Modifier = Modifier) {
     var variableName by remember { mutableStateOf("") }
     var variableValue by remember { mutableStateOf("0") }
+    var variableNameError by remember { mutableStateOf<String?>(null) }
+    var variableValueError by remember { mutableStateOf<String?>(null) }
     val activeLayout = state.layouts.firstOrNull { it.id == state.activeLayoutId } ?: state.layouts.firstOrNull()
     val activeSheetId = activeLayout?.eventSheetId ?: 1
     val sheetEvents = state.events.filter { it.eventSheetId == activeSheetId }
     Column(modifier.fillMaxSize()) {
+        Text(
+            "Folha de eventos — ${activeLayout?.name ?: "Cena"}",
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+            style = MaterialTheme.typography.titleMedium
+        )
         Row(
             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(8.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -1020,7 +1399,12 @@ private fun EventEditor(state: EditorState, modifier: Modifier = Modifier) {
                 EventBlockEditor(
                     event = event,
                     depth = depth,
-                    objectNames = state.objects.map { it.name },
+                    objectNames = state.objects.filter { it.layoutId == state.activeLayoutId }.map { it.name },
+                    onDuplicate = {
+                        val copy = duplicateEventTree(event) { state.nextEventId++ }
+                        state.events = insertEventAfter(state.events, event.id, copy)
+                        state.markProjectChanged()
+                    },
                     onChange = { updated ->
                         state.events = updateEventTree(state.events, event.id) { updated }
                         state.markProjectChanged()
@@ -1035,29 +1419,55 @@ private fun EventEditor(state: EditorState, modifier: Modifier = Modifier) {
         Card(Modifier.fillMaxWidth().padding(8.dp)) {
             Column(Modifier.padding(8.dp)) {
                 Text("Variáveis globais", style = MaterialTheme.typography.titleSmall)
-                state.globalVariables.forEach { (name, value) ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("$name = $value", Modifier.weight(1f))
-                        IconButton(onClick = {
-                            state.globalVariables = state.globalVariables - name
-                            state.markProjectChanged()
-                        }) { Icon(Icons.Default.Delete, contentDescription = "Excluir variável $name") }
+                Column(
+                    Modifier.fillMaxWidth().heightIn(max = 120.dp).verticalScroll(rememberScrollState())
+                ) {
+                    state.globalVariables.forEach { (name, value) ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("$name = $value", Modifier.weight(1f))
+                            IconButton(onClick = {
+                                state.globalVariables = state.globalVariables - name
+                                state.markProjectChanged()
+                            }) { Icon(Icons.Default.Delete, contentDescription = "Excluir variável $name") }
+                        }
                     }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(variableName, { variableName = it }, label = { Text("Nome") },
-                        modifier = Modifier.weight(1f))
+                    OutlinedTextField(
+                        value = variableName,
+                        onValueChange = {
+                            variableName = it
+                            variableNameError = null
+                        },
+                        label = { Text("Nome") },
+                        isError = variableNameError != null,
+                        supportingText = { variableNameError?.let { Text(it) } },
+                        modifier = Modifier.weight(1f)
+                    )
                     Spacer(Modifier.width(6.dp))
-                    OutlinedTextField(variableValue, { variableValue = it }, label = { Text("Valor") },
-                        modifier = Modifier.weight(1f))
+                    OutlinedTextField(
+                        value = variableValue,
+                        onValueChange = {
+                            variableValue = it
+                            variableValueError = null
+                        },
+                        label = { Text("Valor numérico") },
+                        isError = variableValueError != null,
+                        supportingText = { variableValueError?.let { Text(it) } },
+                        modifier = Modifier.weight(1f)
+                    )
                     IconButton(onClick = {
                         val value = variableValue.toFloatOrNull()
-                        if (variableName.isNotBlank() && value != null) {
+                        variableNameError = if (variableName.isBlank()) "Digite o nome da variável." else null
+                        variableValueError = if (value == null) "Digite um número válido." else null
+                        if (variableNameError == null && variableValueError == null && value != null) {
                             state.globalVariables = state.globalVariables + (variableName to value)
                             state.markProjectChanged()
                             variableName = ""
                             variableValue = "0"
-                        } else state.notice = "Informe um nome e um valor numérico válidos."
+                            variableNameError = null
+                            variableValueError = null
+                        }
                     }) { Icon(Icons.Default.Add, contentDescription = "Adicionar variável global") }
                 }
             }
@@ -1079,6 +1489,7 @@ private fun EventBlockEditor(
     event: EventRow,
     depth: Int,
     objectNames: List<String>,
+    onDuplicate: () -> Unit,
     onChange: (EventRow) -> Unit,
     onDelete: () -> Unit
 ) {
@@ -1108,6 +1519,9 @@ private fun EventBlockEditor(
                 if (event.blockKind == EventBlockKind.EVENT) {
                     Switch(checked = event.enabled, onCheckedChange = { onChange(event.copy(enabled = it)) })
                 }
+                IconButton(onClick = onDuplicate) {
+                    Icon(Icons.Default.ContentCopy, contentDescription = "Duplicar bloco")
+                }
                 IconButton(onClick = onDelete) { Icon(Icons.Default.Delete, contentDescription = "Excluir bloco") }
             }
             if (event.blockKind != EventBlockKind.EVENT) {
@@ -1125,6 +1539,14 @@ private fun EventBlockEditor(
                 )
             }
             if (event.blockKind == EventBlockKind.EVENT) {
+                if (event.conditions.size > 1) {
+                    EnumChoice(
+                        if (event.conditionJoin == ConditionJoin.AND) "Todas as condições (E)" else "Qualquer condição (OU)",
+                        ConditionJoin.entries.map { if (it == ConditionJoin.AND) "Todas as condições (E)" else "Qualquer condição (OU)" }
+                    ) { label ->
+                        onChange(event.copy(conditionJoin = if (label.startsWith("Todas")) ConditionJoin.AND else ConditionJoin.OR))
+                    }
+                }
                 event.conditions.forEachIndexed { index, condition ->
                     ConditionEditor(condition, objectNames) { changed ->
                         onChange(event.copy(conditions = event.conditions.toMutableList().also { it[index] = changed }))
@@ -1165,6 +1587,7 @@ private fun ConditionEditor(
             ConditionKind.KEY_DOWN -> EnumChoice(condition.key, listOf("ESQUERDA", "DIREITA", "CIMA", "BAIXO", "PULAR")) {
                 onChange(condition.copy(key = it))
             }
+            ConditionKind.TOUCH -> Text("Verdadeira durante um toque na área do jogo.")
             ConditionKind.VARIABLE_COMPARE -> {
                 OutlinedTextField(condition.variable, { onChange(condition.copy(variable = it)) },
                     label = { Text("Variável (use local:nome para variável local)") }, modifier = Modifier.fillMaxWidth())
@@ -1186,7 +1609,16 @@ private fun ConditionEditor(
                     onChange(condition.copy(secondObject = it))
                 }
             }
-            ConditionKind.ALWAYS, ConditionKind.START_OF_LAYOUT, ConditionKind.UNSUPPORTED -> Unit
+            ConditionKind.ALWAYS, ConditionKind.START_OF_LAYOUT, ConditionKind.ELSE, ConditionKind.UNSUPPORTED -> Unit
+        }
+        if (condition.kind != ConditionKind.ALWAYS && condition.kind != ConditionKind.UNSUPPORTED) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Inverter condição", Modifier.weight(1f))
+                Switch(
+                    checked = condition.inverted,
+                    onCheckedChange = { onChange(condition.copy(inverted = it)) }
+                )
+            }
         }
     }
 }
@@ -1203,17 +1635,23 @@ private fun ActionEditor(
                 ?.let { onChange(action.copy(kind = it)) }
         }
         when (action.kind) {
-            ActionKind.MOVE_BY, ActionKind.SET_POSITION -> {
-                EnumChoice(action.targetName.ifBlank { "Todos os objetos" }, listOf("Todos os objetos") + objectNames) {
-                    onChange(action.copy(targetName = if (it == "Todos os objetos") "" else it))
+            ActionKind.MOVE_BY, ActionKind.SET_POSITION, ActionKind.CREATE_INSTANCE -> {
+                val options = if (action.kind == ActionKind.CREATE_INSTANCE) {
+                    listOf("Selecione uma instância-modelo") + objectNames
+                } else {
+                    listOf("Todos os objetos") + objectNames
+                }
+                val selected = action.targetName.ifBlank { options.first() }
+                EnumChoice(selected, options) {
+                    onChange(action.copy(targetName = if (it == options.first()) "" else it))
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     OutlinedTextField(action.valueExpression.ifBlank { action.value.toString() }, {
                         onChange(action.copy(valueExpression = it))
-                    }, label = { Text("X / ΔX") }, modifier = Modifier.weight(1f))
+                    }, label = { Text(if (action.kind == ActionKind.CREATE_INSTANCE) "X" else "X / ΔX") }, modifier = Modifier.weight(1f))
                     OutlinedTextField(action.valueYExpression.ifBlank { action.valueY.toString() }, {
                         onChange(action.copy(valueYExpression = it))
-                    }, label = { Text("Y / ΔY") }, modifier = Modifier.weight(1f))
+                    }, label = { Text(if (action.kind == ActionKind.CREATE_INSTANCE) "Y" else "Y / ΔY") }, modifier = Modifier.weight(1f))
                 }
             }
             ActionKind.SET_VARIABLE, ActionKind.ADD_VARIABLE -> {
@@ -1249,8 +1687,10 @@ private fun conditionLabel(kind: ConditionKind) = when (kind) {
     ConditionKind.ALWAYS -> "Sempre"
     ConditionKind.START_OF_LAYOUT -> "Ao iniciar a cena"
     ConditionKind.KEY_DOWN -> "Tecla/controle pressionado"
+    ConditionKind.TOUCH -> "Toque na cena"
     ConditionKind.VARIABLE_COMPARE -> "Comparar variável"
     ConditionKind.OVERLAP -> "Objetos se sobrepõem"
+    ConditionKind.ELSE -> "Senão (evento anterior não atendido)"
     ConditionKind.UNSUPPORTED -> "Condição desconhecida (preservada)"
 }
 
@@ -1260,6 +1700,7 @@ private fun actionLabel(kind: ActionKind) = when (kind) {
     ActionKind.SET_VARIABLE -> "Definir variável"
     ActionKind.ADD_VARIABLE -> "Somar à variável"
     ActionKind.DESTROY_INSTANCE -> "Destruir objeto"
+    ActionKind.CREATE_INSTANCE -> "Criar instância"
     ActionKind.ROTATE -> "Definir rotação"
     ActionKind.CALL_FUNCTION -> "Chamar função"
     ActionKind.UNSUPPORTED -> "Ação desconhecida (preservada)"
@@ -1276,6 +1717,18 @@ private fun EventCondition.compareLabel() = compare.label()
 
 private fun flattenEventTree(events: List<EventRow>, depth: Int = 0): List<Pair<EventRow, Int>> =
     events.flatMap { listOf(it to depth) + flattenEventTree(it.children, depth + 1) }
+
+internal fun duplicateEventTree(event: EventRow, nextId: () -> Long): EventRow =
+    event.copy(id = nextId(), children = event.children.map { duplicateEventTree(it, nextId) })
+
+private fun insertEventAfter(events: List<EventRow>, targetId: Long, insertion: EventRow): List<EventRow> =
+    events.flatMap { event ->
+        if (event.id == targetId) {
+            listOf(event, insertion)
+        } else {
+            listOf(event.copy(children = insertEventAfter(event.children, targetId, insertion)))
+        }
+    }
 
 private fun updateEventTree(
     events: List<EventRow>,
@@ -1297,14 +1750,23 @@ private inline fun <reified T : Enum<T>> enumValue(value: String, fallback: T): 
 
 @Composable
 private fun AnimationEditor(state: EditorState, onImport: () -> Unit, modifier: Modifier = Modifier) {
+    val objectRevision = state.objectRevision
     val layoutObjects = state.objects.filter { it.layoutId == state.activeLayoutId }
-    var selectedId by remember(state.objects) {
+    var selectedId by remember(state.objects, state.activeLayoutId) {
         mutableIntStateOf(state.selectedId.takeIf { selected -> layoutObjects.any { it.id == selected } }
             ?: layoutObjects.firstOrNull()?.id ?: 0)
     }
     val selectedObject = state.objects.firstOrNull { it.id == selectedId }
     val frames = selectedObject?.animationFrames.orEmpty()
     val images = rememberLoadedImages(state.assets) {}
+    var previewPlaying by remember(selectedId) { mutableStateOf(false) }
+    var previewFrame by remember(selectedId) { mutableIntStateOf(0) }
+    LaunchedEffect(previewPlaying, selectedId, objectRevision) {
+        while (previewPlaying && frames.isNotEmpty()) {
+            delay((frames[previewFrame.coerceIn(frames.indices)] .durationSeconds * 1000).toLong().coerceAtLeast(20L))
+            previewFrame = (previewFrame + 1) % frames.size
+        }
+    }
     Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).imePadding().padding(12.dp)) {
         Text("Editor de animações", style = MaterialTheme.typography.titleLarge)
         if (layoutObjects.isEmpty()) {
@@ -1329,7 +1791,38 @@ private fun AnimationEditor(state: EditorState, onImport: () -> Unit, modifier: 
                 }
             }
         }
+        selectedObject?.let { obj ->
+            OutlinedTextField(
+                value = obj.animationName,
+                onValueChange = { obj.animationName = it; state.markObjectsChanged() },
+                label = { Text("Nome da animação") },
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
         Spacer(Modifier.height(12.dp))
+        val preview = frames.getOrNull(previewFrame)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Card(Modifier.weight(1f).height(160.dp)) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    preview?.let { frame ->
+                        images[frame.assetId]?.let { Image(it, "Pré-visualização do quadro") }
+                    } ?: Text("Sem quadros para pré-visualizar")
+                }
+            }
+            Column {
+                IconButton(
+                    enabled = frames.isNotEmpty(),
+                    onClick = { previewPlaying = !previewPlaying }
+                ) {
+                    Icon(
+                        if (previewPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = if (previewPlaying) "Pausar animação" else "Reproduzir animação"
+                    )
+                }
+                Text("${frames.size} quadros", style = MaterialTheme.typography.labelSmall)
+            }
+        }
+        Spacer(Modifier.height(8.dp))
         if (selectedObject != null) {
             frames.forEachIndexed { index, frame ->
                 val asset = state.assets.firstOrNull { it.id == frame.assetId }
@@ -1361,6 +1854,11 @@ private fun AnimationEditor(state: EditorState, onImport: () -> Unit, modifier: 
                             )
                         }
                         Column {
+                            IconButton(onClick = {
+                                selectedObject.animationFrames = selectedObject.animationFrames.toMutableList()
+                                    .also { it.add(index + 1, frame.copy()) }
+                                state.markObjectsChanged()
+                            }) { Icon(Icons.Default.ContentCopy, contentDescription = "Duplicar quadro") }
                             IconButton(
                                 enabled = index > 0,
                                 onClick = {
@@ -1420,18 +1918,24 @@ private fun GamePreviewScreen(
     onExit: () -> Unit
 ) {
     val images = rememberLoadedImages(assets) {}
-    val leftSource = remember { MutableInteractionSource() }
-    val rightSource = remember { MutableInteractionSource() }
-    val upSource = remember { MutableInteractionSource() }
-    val downSource = remember { MutableInteractionSource() }
-    val jumpSource = remember { MutableInteractionSource() }
-    val left by leftSource.collectIsPressedAsState()
-    val right by rightSource.collectIsPressedAsState()
-    val up by upSource.collectIsPressedAsState()
-    val down by downSource.collectIsPressedAsState()
-    val jump by jumpSource.collectIsPressedAsState()
-    val latestInput by rememberUpdatedState(RuntimeInput(left, right, up, down, jump))
+    val focusRequester = remember { FocusRequester() }
+    var left by remember { mutableStateOf(false) }
+    var right by remember { mutableStateOf(false) }
+    var up by remember { mutableStateOf(false) }
+    var down by remember { mutableStateOf(false) }
+    var jump by remember { mutableStateOf(false) }
+    var touchPressed by remember { mutableStateOf(false) }
+    val latestInput by rememberUpdatedState(RuntimeInput(left, right, up, down, jump, touchPressed))
     var frameTick by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+
+    LaunchedEffect(touchPressed) {
+        if (touchPressed) {
+            delay(80)
+            touchPressed = false
+        }
+    }
 
     LaunchedEffect(runtime) {
         var previousFrame = 0L
@@ -1444,7 +1948,21 @@ private fun GamePreviewScreen(
         }
     }
 
-    Column(Modifier.fillMaxSize().systemBarsPadding()) {
+    Column(
+        Modifier.fillMaxSize().systemBarsPadding().focusRequester(focusRequester).focusable()
+            .onPreviewKeyEvent { event ->
+                val pressed = event.type == KeyEventType.KeyDown
+                val handled = when (event.key) {
+                    Key.DirectionLeft, Key.A -> { left = pressed; true }
+                    Key.DirectionRight, Key.D -> { right = pressed; true }
+                    Key.DirectionUp, Key.W -> { up = pressed; true }
+                    Key.DirectionDown, Key.S -> { down = pressed; true }
+                    Key.Spacebar -> { jump = pressed; true }
+                    else -> false
+                }
+                handled
+            }
+    ) {
         Row(
             Modifier.fillMaxWidth().background(Color(0xFF202830)).padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -1454,35 +1972,49 @@ private fun GamePreviewScreen(
             TextButton(onClick = onExit) { Text("Fechar", color = Color.White) }
         }
         Box(Modifier.weight(1f).fillMaxWidth().background(Color(0xFF111820))) {
-            Canvas(Modifier.fillMaxSize()) {
+            Canvas(
+                Modifier.fillMaxSize().pointerInput(runtime) {
+                    detectTapGestures {
+                        touchPressed = true
+                    }
+                }
+            ) {
                 val currentFrame = frameTick
-                val scale = min(size.width / runtime.width, size.height / runtime.height)
+                val scale = min(size.width / runtime.width, size.height / runtime.height) * runtime.cameraZoom
                 val sceneWidth = runtime.width * scale
                 val sceneHeight = runtime.height * scale
-                val origin = Offset((size.width - sceneWidth) / 2f, (size.height - sceneHeight) / 2f)
-                drawRect(Color(0xFF303A43), topLeft = origin, size = Size(sceneWidth, sceneHeight))
+                val viewportCenter = Offset(size.width / 2f, size.height / 2f)
+                val sceneOrigin = Offset(
+                    viewportCenter.x - runtime.cameraX * scale,
+                    viewportCenter.y - runtime.cameraY * scale
+                )
+                drawRect(Color(0xFF303A43), topLeft = sceneOrigin, size = Size(sceneWidth, sceneHeight))
                 runtime.objects.forEach { obj ->
                     val layer = runtime.layers[obj.layerId]
                     if (layer?.visible == false) return@forEach
-                    val left = origin.x + (obj.x - runtime.cameraX * (layer?.scrollX ?: 1f)) * scale
-                    val top = origin.y + (obj.y - runtime.cameraY * (layer?.scrollY ?: 1f)) * scale
+                    val left = viewportCenter.x + (obj.x - runtime.cameraX * (layer?.scrollX ?: 1f)) * scale
+                    val top = viewportCenter.y + (obj.y - runtime.cameraY * (layer?.scrollY ?: 1f)) * scale
                     val width = obj.w * scale
                     val height = obj.h * scale
                     val image = images[obj.assetId]
                     rotate(obj.rotation, Offset(left + width / 2f, top + height / 2f)) {
-                        if (image != null) {
+                        if (obj.plugin == "Sprite" && image != null) {
                             drawImage(
                                 image,
                                 dstOffset = IntOffset(left.roundToInt(), top.roundToInt()),
                                 dstSize = IntSize(width.roundToInt().coerceAtLeast(1), height.roundToInt().coerceAtLeast(1)),
                                 alpha = layer?.opacity?.coerceIn(0f, 1f) ?: 1f
                             )
-                        } else {
-                            drawRect(
-                                Color(0xFF4FC3F7),
-                                Offset(left, top),
-                                Size(width, height),
-                                alpha = layer?.opacity?.coerceIn(0f, 1f) ?: 1f
+                        } else if (obj.plugin == "Text" && obj.text.isNotEmpty()) {
+                            drawContext.canvas.nativeCanvas.drawText(
+                                obj.text,
+                                left,
+                                top + (18f * scale),
+                                Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                                    color = android.graphics.Color.WHITE
+                                    textSize = 18f * scale
+                                    alpha = ((layer?.opacity ?: 1f).coerceIn(0f, 1f) * 255).toInt()
+                                }
                             )
                         }
                     }
@@ -1494,9 +2026,11 @@ private fun GamePreviewScreen(
                         textSize = 14.dp.toPx()
                     }
                     val lines = buildList {
-                        add("Ciclo: $currentFrame")
+                        add("FPS: ${runtime.fps.toInt()}  Ciclo: $currentFrame")
                         add("Instâncias: ${runtime.objects.size}")
                         add("Variáveis: ${runtime.globalVariables}")
+                        add("Eventos ativos: ${runtime.eventStates.count { it.value }}")
+                        runtime.eventStates.forEach { (id, passed) -> add("Evento $id: ${if (passed) "OK" else "não atendido"}") }
                         runtime.lastError?.let { add(it) }
                     }
                     drawRect(Color.Black.copy(alpha = 0.72f), Offset(8.dp.toPx(), 8.dp.toPx()),
@@ -1510,27 +2044,13 @@ private fun GamePreviewScreen(
                 }
             }
         }
-        Row(
-            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).background(Color(0xFF202830)).padding(6.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            RuntimeHoldButton("◀", leftSource)
-            RuntimeHoldButton("▲", upSource)
-            RuntimeHoldButton("▼", downSource)
-            RuntimeHoldButton("▶", rightSource)
-            RuntimeHoldButton("PULAR", jumpSource)
-        }
+        Text(
+            "Toque na cena para acionar eventos de toque. Teclado: setas/WASD e espaço.",
+            Modifier.fillMaxWidth().background(Color(0xFF202830)).padding(horizontal = 12.dp, vertical = 6.dp),
+            color = Color.White,
+            style = MaterialTheme.typography.labelSmall
+        )
     }
-}
-
-@Composable
-private fun RuntimeHoldButton(label: String, source: MutableInteractionSource) {
-    Button(
-        onClick = {},
-        interactionSource = source,
-        modifier = Modifier.heightIn(min = 52.dp)
-    ) { Text(label) }
 }
 
 @Composable
@@ -1538,11 +2058,34 @@ private fun ProjectManager(
     state: EditorState,
     modifier: Modifier = Modifier,
     onRunProject: () -> Unit,
-    onDebugLayout: () -> Unit
+    onDebugLayout: () -> Unit,
+    onNewProject: () -> Unit
 ) {
     var name by remember(state.projectName) { mutableStateOf(state.projectName) }
+    var confirmNewProject by remember { mutableStateOf(false) }
+    if (confirmNewProject) {
+        AlertDialog(
+            onDismissRequest = { confirmNewProject = false },
+            title = { Text("Criar projeto novo?") },
+            text = { Text("O projeto aberto será substituído. Salve as alterações antes de continuar.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmNewProject = false
+                    onNewProject()
+                }) { Text("Criar projeto") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmNewProject = false }) { Text("Cancelar") }
+            }
+        )
+    }
     Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).imePadding().padding(12.dp)) {
         Text("Gerenciador de projetos", style = MaterialTheme.typography.titleLarge)
+        OutlinedButton(onClick = { confirmNewProject = true }, modifier = Modifier.heightIn(min = 48.dp)) {
+            Icon(Icons.Default.Add, null)
+            Spacer(Modifier.width(6.dp))
+            Text("Novo projeto")
+        }
         OutlinedTextField(
             value = name,
             onValueChange = { name = it; state.projectName = it; state.modified = true },
@@ -1551,6 +2094,13 @@ private fun ProjectManager(
         )
         Spacer(Modifier.height(12.dp))
         Text("Cenas", style = MaterialTheme.typography.titleSmall)
+        EnumChoice(
+            state.layouts.firstOrNull { it.id == state.startLayoutId }?.name ?: "Cena inicial",
+            state.layouts.map { it.name }
+        ) { name ->
+            state.startLayoutId = state.layouts.firstOrNull { it.name == name }?.id ?: state.startLayoutId
+            state.markProjectChanged()
+        }
         state.layouts.forEach { layout ->
             Card(modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
                 Column(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
@@ -1570,12 +2120,14 @@ private fun ProjectManager(
                             if (state.layouts.size > 1) {
                                 state.objects = state.objects.filterNot { it.layoutId == layout.id }
                                 state.events = state.events.filterNot { it.eventSheetId == layout.eventSheetId }
+                                state.layers = state.layers.filterNot { it.layoutId == layout.id }
                                 state.layouts = state.layouts.filterNot { it.id == layout.id }
                                 val next = state.layouts.firstOrNull()
                                 if (next != null) {
                                     state.activeLayoutId = next.id
                                     state.width = next.width
                                     state.height = next.height
+                                    if (state.startLayoutId == layout.id) state.startLayoutId = next.id
                                 }
                                 state.markProjectChanged()
                             } else {
@@ -1586,7 +2138,9 @@ private fun ProjectManager(
                     OutlinedTextField(
                         value = layout.name,
                         onValueChange = {
-                            layout.name = it
+                            state.layouts = state.layouts.map { current ->
+                                if (current.id == layout.id) current.copy(name = it) else current
+                            }
                             state.markProjectChanged()
                         },
                         label = { Text("Nome da cena") },
@@ -1594,13 +2148,19 @@ private fun ProjectManager(
                     )
                     Row(modifier = Modifier.fillMaxWidth()) {
                         PropertyNumber("Largura", layout.width.toFloat(), Modifier.weight(1f)) {
-                            layout.width = it.toInt().coerceAtLeast(64)
-                            if (state.activeLayoutId == layout.id) state.width = layout.width
+                            val width = it.toInt().coerceAtLeast(64)
+                            state.layouts = state.layouts.map { current ->
+                                if (current.id == layout.id) current.copy(width = width) else current
+                            }
+                            if (state.activeLayoutId == layout.id) state.width = width
                             state.markProjectChanged()
                         }
                         PropertyNumber("Altura", layout.height.toFloat(), Modifier.weight(1f)) {
-                            layout.height = it.toInt().coerceAtLeast(64)
-                            if (state.activeLayoutId == layout.id) state.height = layout.height
+                            val height = it.toInt().coerceAtLeast(64)
+                            state.layouts = state.layouts.map { current ->
+                                if (current.id == layout.id) current.copy(height = height) else current
+                            }
+                            if (state.activeLayoutId == layout.id) state.height = height
                             state.markProjectChanged()
                         }
                     }
@@ -1613,6 +2173,8 @@ private fun ProjectManager(
             val sheetId = (state.layouts.maxOfOrNull { it.eventSheetId } ?: 0) + 1
             val layout = LayoutInfo(id, "Cena $n", state.width, state.height, sheetId)
             state.layouts = state.layouts + layout
+            val layerId = (state.layers.maxOfOrNull { it.id } ?: 0) + 1
+            state.layers = state.layers + LayerModel(layerId, "Principal", layoutId = id)
             state.activeLayoutId = id
             state.selectedId = 0
             state.markProjectChanged()
@@ -1800,7 +2362,9 @@ private fun LayoutEditor(state: EditorState, onObjectLongPress: () -> Unit) {
             val transform = SceneTransform(layoutWidth, layoutHeight, Size(size.width, size.height), zoom, pan)
             drawRect(Color(0xFFF9FBFC), topLeft = transform.origin, size = transform.sceneSize)
             for (obj in layoutObjects) {
-                if (!obj.visible || state.layers.none { it.id == obj.layerId && it.visible }) continue
+                if (!obj.visible || state.layers.none {
+                        it.id == obj.layerId && it.layoutId == state.activeLayoutId && it.visible
+                    }) continue
                 val rect = transform.screenRect(obj)
                 rotate(obj.rotation, rect.center) {
                     val image = decodedImages[obj.assetId]
@@ -1817,7 +2381,7 @@ private fun LayoutEditor(state: EditorState, onObjectLongPress: () -> Unit) {
                         )
                         if (obj.plugin == "Text") {
                             drawContext.canvas.nativeCanvas.drawText(
-                                obj.name,
+                                obj.text,
                                 rect.left + 4.dp.toPx(),
                                 rect.top + 20.dp.toPx(),
                                 Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -1852,11 +2416,18 @@ private fun rememberLoadedImages(
     onError: (String) -> Unit
 ): Map<Int, ImageBitmap> {
     var images by remember { mutableStateOf<Map<Int, ImageBitmap>>(emptyMap()) }
-    LaunchedEffect(assets) {
+    var imageSources by remember { mutableStateOf<Map<Int, String>>(emptyMap()) }
+    val imageContent = remember(assets) { assets.map { it.id to it.base64 } }
+    val latestImages by rememberUpdatedState(images)
+    LaunchedEffect(imageContent) {
+        val requestedSources = imageContent.toMap()
+        val retained = images.filter { (id, _) -> imageSources[id] == requestedSources[id] }
+        images.filterKeys { it !in retained }.values.forEach { it.asAndroidBitmap().recycle() }
+        val missing = assets.filterNot { it.id in retained }
         val result = withContext(Dispatchers.IO) {
             val decoded = mutableMapOf<Int, ImageBitmap>()
             val errors = mutableListOf<String>()
-            assets.forEach { asset ->
+            missing.forEach { asset ->
                 try {
                     val bytes = Base64.decode(asset.base64, Base64.DEFAULT)
                     val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
@@ -1868,12 +2439,13 @@ private fun rememberLoadedImages(
             }
             decoded to errors
         }
-        images = result.first
+        images = retained + result.first
+        imageSources = requestedSources
         result.second.firstOrNull()?.let(onError)
     }
-    DisposableEffect(images) {
+    DisposableEffect(Unit) {
         onDispose {
-            images.values.forEach { it.asAndroidBitmap().recycle() }
+            latestImages.values.forEach { it.asAndroidBitmap().recycle() }
         }
     }
     return images
