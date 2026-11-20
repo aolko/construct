@@ -74,6 +74,7 @@ data class EventAction(
 
 data class EventRow(
     val id: Long,
+    val eventSheetId: Int = 1,
     val blockKind: EventBlockKind = EventBlockKind.EVENT,
     val name: String = "",
     val conditions: List<EventCondition> = listOf(EventCondition()),
@@ -107,16 +108,21 @@ data class RuntimeProject(
     val objects: List<LayoutObject>,
     val layers: List<LayerModel>,
     val events: List<EventRow>,
-    val globalVariables: Map<String, Float>
+    val globalVariables: Map<String, Float>,
+    val activeLayoutId: Int = 1,
+    val activeEventSheetId: Int = 1
 )
 
 class GameRuntime(project: RuntimeProject) {
     val width = project.width.coerceAtLeast(1)
     val height = project.height.coerceAtLeast(1)
-    val objects = project.objects.filter { it.visible }.map { it.copy() }.toMutableList()
+    val objects = project.objects
+        .filter { it.visible && it.layoutId == project.activeLayoutId }
+        .map { it.copy() }
+        .toMutableList()
     val layers = project.layers.associateBy { it.id }
     val globalVariables = project.globalVariables.toMutableMap()
-    private val events = project.events
+    private val events = project.events.filter { it.eventSheetId == project.activeEventSheetId }
     private var startPending = true
     private val previousInput = mutableSetOf<String>()
     private val verticalVelocity = mutableMapOf<Int, Float>()

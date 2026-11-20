@@ -75,6 +75,7 @@ data class LayoutObject(
     var y: Float,
     var w: Float,
     var h: Float,
+    var layoutId: Int = 1,
     var rotation: Float = 0f,
     var layerId: Int = 1,
     var visible: Boolean = true,
@@ -82,6 +83,14 @@ data class LayoutObject(
     var behaviors: List<BehaviorSpec> = emptyList(),
     var animationFrames: List<AnimationFrame> = emptyList(),
     var frameDuration: Float = 0.15f
+)
+
+data class LayoutInfo(
+    var id: Int,
+    var name: String,
+    var width: Int = 640,
+    var height: Int = 480,
+    var eventSheetId: Int = 1
 )
 
 data class ImageAsset(
@@ -95,7 +104,7 @@ private data class ProjectSnapshot(
     val name: String,
     val width: Int,
     val height: Int,
-    val layouts: List<String>,
+    val layouts: List<LayoutInfo>,
     val objectTypes: List<String>,
     val layers: List<LayerModel>,
     val objects: List<LayoutObject>,
@@ -109,10 +118,11 @@ class EditorState {
     var width by mutableStateOf(640)
     var height by mutableStateOf(480)
     var objectTypes by mutableStateOf(listOf("Imagem", "Fundo quadriculado", "Texto"))
-    var layouts by mutableStateOf(listOf("Cena 1"))
+    var layouts by mutableStateOf(listOf(LayoutInfo(1, "Cena 1", 640, 480, 1)))
+    var activeLayoutId by mutableIntStateOf(1)
     var objects by mutableStateOf(listOf(
-        LayoutObject(1, "Imagem 1", "Sprite", 160f, 120f, 96f, 96f),
-        LayoutObject(2, "Texto 1", "Text", 320f, 80f, 180f, 48f)
+        LayoutObject(1, "Imagem 1", "Sprite", 160f, 120f, 96f, 96f, layoutId = 1),
+        LayoutObject(2, "Texto 1", "Text", 320f, 80f, 180f, 48f, layoutId = 1)
     ))
     var events by mutableStateOf(emptyList<EventRow>())
     var layers by mutableStateOf(listOf(LayerModel(1, "Principal")))
@@ -204,7 +214,7 @@ class MainActivity : ComponentActivity() {
                 val objectId = (state.objects.maxOfOrNull { it.id } ?: 0) + 1
                 state.objects = state.objects + LayoutObject(
                     objectId, asset.name.substringBeforeLast('.'), "Sprite",
-                    220f, 180f, 128f, 128f, assetId = asset.id
+                    220f, 180f, 128f, 128f, layoutId = state.activeLayoutId, assetId = asset.id
                 )
                 state.selectedId = objectId
                 state.markObjectsChanged()
@@ -288,6 +298,7 @@ class MainActivity : ComponentActivity() {
 
     private fun serializeEvent(event: EventRow): JSONObject = JSONObject()
         .put("id", event.id)
+        .put("eventSheetId", event.eventSheetId)
         .put("blockKind", event.blockKind.name)
         .put("name", event.name)
         .put("enabled", event.enabled)
@@ -349,6 +360,7 @@ class MainActivity : ComponentActivity() {
         } ?: emptyList()
         return EventRow(
             id = json.optLong("id", System.nanoTime()),
+            eventSheetId = json.optInt("eventSheetId", 1),
             blockKind = enumValue(json.optString("blockKind"), EventBlockKind.EVENT),
             name = json.optString("name"),
             conditions = conditions,
@@ -387,6 +399,7 @@ class MainActivity : ComponentActivity() {
             objects.put(JSONObject()
                 .put("id", o.id).put("name", o.name).put("plugin", o.plugin)
                 .put("x", o.x).put("y", o.y).put("w", o.w).put("h", o.h)
+                .put("layoutId", o.layoutId)
                 .put("rotation", o.rotation).put("layerId", o.layerId).put("visible", o.visible)
                 .put("assetId", o.assetId)
                 .put("frameDuration", o.frameDuration)
@@ -418,13 +431,20 @@ class MainActivity : ComponentActivity() {
             assets.put(JSONObject().put("id", asset.id).put("name", asset.name)
                 .put("mimeType", asset.mimeType).put("base64", asset.base64))
         }
+        val layouts = JSONArray()
+        project.layouts.forEach { layout ->
+            layouts.put(JSONObject()
+                .put("id", layout.id).put("name", layout.name)
+                .put("width", layout.width).put("height", layout.height)
+                .put("eventSheetId", layout.eventSheetId))
+        }
         return JSONObject()
             .put("format", "ConstructClassicAndroid")
-            .put("formatVersion", 1)
+            .put("formatVersion", 2)
             .put("originalCapCompatible", false)
             .put("name", project.name)
             .put("width", project.width).put("height", project.height)
-            .put("layouts", JSONArray(project.layouts))
+            .put("layouts", layouts)
             .put("objectTypes", JSONArray(project.objectTypes))
             .put("layers", layers).put("objects", objects).put("events", events)
             .put("globalVariables", variables).put("assets", assets)
@@ -434,8 +454,21 @@ class MainActivity : ComponentActivity() {
     private fun parseNativeProject(json: String): ProjectSnapshot {
         val root = JSONObject(json)
         val layouts = root.optJSONArray("layouts")?.let { values ->
-            List(values.length()) { values.getString(it) }
-        } ?: listOf("Cena 1")
+            List(values.length()) { index ->
+                val value = values.opt(index)
+                if (value is JSONObject) {
+                    LayoutInfo(
+                        id = value.optInt("id", index + 1),
+                        name = value.optString("name", "Cena ${index + 1}"),
+                        width = value.optInt("width", 640),
+                        height = value.optInt("height", 480),
+                        eventSheetId = value.optInt("eventSheetId", index + 1)
+                    )
+                } else {
+                    LayoutInfo(index + 1, value?.toString() ?: "Cena ${index + 1}", 640, 480, index + 1)
+                }
+            }.ifEmpty { listOf(LayoutInfo(1, "Cena 1", 640, 480, 1)) }
+        } ?: listOf(LayoutInfo(1, "Cena 1", 640, 480, 1))
         val objectTypes = root.optJSONArray("objectTypes")?.let { values ->
             List(values.length()) { values.getString(it) }
         } ?: listOf("Imagem", "Fundo quadriculado", "Texto")
@@ -446,6 +479,7 @@ class MainActivity : ComponentActivity() {
             loadedObjects += LayoutObject(o.optInt("id"), o.optString("name"), o.optString("plugin"),
                 o.optDouble("x").toFloat(), o.optDouble("y").toFloat(),
                 o.optDouble("w").toFloat(), o.optDouble("h").toFloat(),
+                layoutId = o.optInt("layoutId", 1),
                 rotation = o.optDouble("rotation").toFloat(),
                 layerId = o.optInt("layerId", 1),
                 visible = o.optBoolean("visible", true),
@@ -498,6 +532,9 @@ class MainActivity : ComponentActivity() {
         state.width = project.width
         state.height = project.height
         state.layouts = project.layouts
+        state.activeLayoutId = project.layouts.firstOrNull()?.id ?: 1
+        state.width = project.layouts.firstOrNull()?.width ?: project.width
+        state.height = project.layouts.firstOrNull()?.height ?: project.height
         state.objectTypes = project.objectTypes
         state.layers = project.layers
         state.objects = project.objects
@@ -636,14 +673,23 @@ fun ConstructApp(
                 }
             }
             if (showGame) {
+                val activeLayout = state.layouts.firstOrNull { it.id == state.activeLayoutId } ?: state.layouts.firstOrNull()
+                val runtimeWidth = activeLayout?.width ?: state.width
+                val runtimeHeight = activeLayout?.height ?: state.height
+                val runtimeObjects = state.objects.filter { it.layoutId == (activeLayout?.id ?: 1) }
+                val runtimeEvents = state.events.filter {
+                    it.eventSheetId == (activeLayout?.eventSheetId ?: 1)
+                }
                 val runtime = remember(
-                    state.width, state.height, state.objects, state.layers, state.events, state.globalVariables
+                    runtimeWidth, runtimeHeight, runtimeObjects, state.layers, runtimeEvents, state.globalVariables
                 ) {
                     GameRuntime(
                         RuntimeProject(
-                            state.width, state.height,
-                            state.objects.map { it.copy(behaviors = it.behaviors.toList(), animationFrames = it.animationFrames.toList()) },
-                            state.layers.toList(), state.events.toList(), state.globalVariables.toMap()
+                            runtimeWidth, runtimeHeight,
+                            runtimeObjects.map { it.copy(behaviors = it.behaviors.toList(), animationFrames = it.animationFrames.toList()) },
+                            state.layers.toList(), runtimeEvents.toList(), state.globalVariables.toMap(),
+                            activeLayoutId = activeLayout?.id ?: 1,
+                            activeEventSheetId = activeLayout?.eventSheetId ?: 1
                         )
                     )
                 }
@@ -697,7 +743,7 @@ private fun PropertiesPanel(
                                 modifier = Modifier.weight(1f))
                             IconButton(onClick = {
                                 val id = (state.objects.maxOfOrNull { it.id } ?: 0) + 1
-                                val obj = LayoutObject(id, "Imagem $id", "Sprite", 200f, 160f, 96f, 96f)
+                                val obj = LayoutObject(id, "Imagem $id", "Sprite", 200f, 160f, 96f, 96f, layoutId = state.activeLayoutId)
                                 state.objects = state.objects + obj
                                 state.selectedId = id
                                 state.markObjectsChanged()
@@ -708,7 +754,7 @@ private fun PropertiesPanel(
                             items(state.objectTypes) { type ->
                                 TextButton(onClick = {
                                     val id = (state.objects.maxOfOrNull { it.id } ?: 0) + 1
-                                    val obj = LayoutObject(id, "$type $id", pluginForType(type), 180f, 140f, 128f, 96f)
+                                    val obj = LayoutObject(id, "$type $id", pluginForType(type), 180f, 140f, 128f, 96f, layoutId = state.activeLayoutId)
                                     state.objects = state.objects + obj
                                     state.selectedId = id
                                     state.markObjectsChanged()
@@ -917,6 +963,9 @@ private fun PropertyNumber(label: String, value: Float, modifier: Modifier = Mod
 private fun EventEditor(state: EditorState, modifier: Modifier = Modifier) {
     var variableName by remember { mutableStateOf("") }
     var variableValue by remember { mutableStateOf("0") }
+    val activeLayout = state.layouts.firstOrNull { it.id == state.activeLayoutId } ?: state.layouts.firstOrNull()
+    val activeSheetId = activeLayout?.eventSheetId ?: 1
+    val sheetEvents = state.events.filter { it.eventSheetId == activeSheetId }
     Column(modifier.fillMaxSize()) {
         Row(
             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(8.dp),
@@ -925,6 +974,7 @@ private fun EventEditor(state: EditorState, modifier: Modifier = Modifier) {
             EventAddButton("Evento") {
                 state.events = state.events + EventRow(
                     id = state.nextEventId++,
+                    eventSheetId = activeSheetId,
                     conditions = listOf(EventCondition()),
                     actions = listOf(EventAction())
                 )
@@ -932,30 +982,30 @@ private fun EventEditor(state: EditorState, modifier: Modifier = Modifier) {
             }
             EventAddButton("Grupo") {
                 state.events = state.events + EventRow(
-                    id = state.nextEventId++, blockKind = EventBlockKind.GROUP, name = "Novo grupo"
+                    id = state.nextEventId++, eventSheetId = activeSheetId, blockKind = EventBlockKind.GROUP, name = "Novo grupo"
                 )
                 state.markProjectChanged()
             }
             EventAddButton("Comentário") {
                 state.events = state.events + EventRow(
-                    id = state.nextEventId++, blockKind = EventBlockKind.COMMENT, name = "Comentário"
+                    id = state.nextEventId++, eventSheetId = activeSheetId, blockKind = EventBlockKind.COMMENT, name = "Comentário"
                 )
                 state.markProjectChanged()
             }
             EventAddButton("Função") {
                 state.events = state.events + EventRow(
-                    id = state.nextEventId++, blockKind = EventBlockKind.FUNCTION, name = "Nova função"
+                    id = state.nextEventId++, eventSheetId = activeSheetId, blockKind = EventBlockKind.FUNCTION, name = "Nova função"
                 )
                 state.markProjectChanged()
             }
             EventAddButton("Subevento") {
-                val parent = flattenEventTree(state.events).lastOrNull {
+                val parent = flattenEventTree(sheetEvents).lastOrNull {
                     it.first.blockKind == EventBlockKind.EVENT ||
                         it.first.blockKind == EventBlockKind.GROUP ||
                         it.first.blockKind == EventBlockKind.FUNCTION
                 }?.first
                 if (parent != null) {
-                    val child = EventRow(state.nextEventId++, conditions = listOf(EventCondition()),
+                    val child = EventRow(state.nextEventId++, eventSheetId = activeSheetId, conditions = listOf(EventCondition()),
                         actions = listOf(EventAction()))
                     state.events = updateEventTree(state.events, parent.id) {
                         it.copy(children = it.children + child)
@@ -966,7 +1016,7 @@ private fun EventEditor(state: EditorState, modifier: Modifier = Modifier) {
         }
         HorizontalDivider()
         LazyColumn(Modifier.weight(1f).fillMaxWidth().imePadding().padding(horizontal = 8.dp)) {
-            items(flattenEventTree(state.events), key = { it.first.id }) { (event, depth) ->
+            items(flattenEventTree(sheetEvents), key = { it.first.id }) { (event, depth) ->
                 EventBlockEditor(
                     event = event,
                     depth = depth,
@@ -1247,16 +1297,17 @@ private inline fun <reified T : Enum<T>> enumValue(value: String, fallback: T): 
 
 @Composable
 private fun AnimationEditor(state: EditorState, onImport: () -> Unit, modifier: Modifier = Modifier) {
+    val layoutObjects = state.objects.filter { it.layoutId == state.activeLayoutId }
     var selectedId by remember(state.objects) {
-        mutableIntStateOf(state.selectedId.takeIf { selected -> state.objects.any { it.id == selected } }
-            ?: state.objects.firstOrNull()?.id ?: 0)
+        mutableIntStateOf(state.selectedId.takeIf { selected -> layoutObjects.any { it.id == selected } }
+            ?: layoutObjects.firstOrNull()?.id ?: 0)
     }
     val selectedObject = state.objects.firstOrNull { it.id == selectedId }
     val frames = selectedObject?.animationFrames.orEmpty()
     val images = rememberLoadedImages(state.assets) {}
     Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).imePadding().padding(12.dp)) {
         Text("Editor de animações", style = MaterialTheme.typography.titleLarge)
-        if (state.objects.isEmpty()) {
+        if (layoutObjects.isEmpty()) {
             Text("Adicione uma imagem à cena para começar a animação.")
         } else {
             var expanded by remember { mutableStateOf(false) }
@@ -1265,7 +1316,7 @@ private fun AnimationEditor(state: EditorState, onImport: () -> Unit, modifier: 
                     Text(selectedObject?.let { "${it.name} (#${it.id})" } ?: "Selecione um objeto")
                 }
                 DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                    state.objects.forEach { obj ->
+                    layoutObjects.forEach { obj ->
                         DropdownMenuItem(
                             text = { Text("${obj.name} (#${obj.id})") },
                             onClick = {
@@ -1502,17 +1553,69 @@ private fun ProjectManager(
         Text("Cenas", style = MaterialTheme.typography.titleSmall)
         state.layouts.forEach { layout ->
             Card(modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
-                Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Layers, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text(layout)
+                Column(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
+                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        FilterChip(
+                            selected = state.activeLayoutId == layout.id,
+                            onClick = {
+                                state.activeLayoutId = layout.id
+                                state.width = layout.width
+                                state.height = layout.height
+                                state.selectedId = state.objects.firstOrNull { it.layoutId == layout.id }?.id ?: 0
+                            },
+                            label = { Text(layout.name) },
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(onClick = {
+                            if (state.layouts.size > 1) {
+                                state.objects = state.objects.filterNot { it.layoutId == layout.id }
+                                state.events = state.events.filterNot { it.eventSheetId == layout.eventSheetId }
+                                state.layouts = state.layouts.filterNot { it.id == layout.id }
+                                val next = state.layouts.firstOrNull()
+                                if (next != null) {
+                                    state.activeLayoutId = next.id
+                                    state.width = next.width
+                                    state.height = next.height
+                                }
+                                state.markProjectChanged()
+                            } else {
+                                state.notice = "Deve existir ao menos uma cena."
+                            }
+                        }) { Icon(Icons.Default.Delete, contentDescription = "Excluir cena") }
+                    }
+                    OutlinedTextField(
+                        value = layout.name,
+                        onValueChange = {
+                            layout.name = it
+                            state.markProjectChanged()
+                        },
+                        label = { Text("Nome da cena") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        PropertyNumber("Largura", layout.width.toFloat(), Modifier.weight(1f)) {
+                            layout.width = it.toInt().coerceAtLeast(64)
+                            if (state.activeLayoutId == layout.id) state.width = layout.width
+                            state.markProjectChanged()
+                        }
+                        PropertyNumber("Altura", layout.height.toFloat(), Modifier.weight(1f)) {
+                            layout.height = it.toInt().coerceAtLeast(64)
+                            if (state.activeLayoutId == layout.id) state.height = layout.height
+                            state.markProjectChanged()
+                        }
+                    }
                 }
             }
         }
         OutlinedButton(onClick = {
             val n = state.layouts.size + 1
-            state.layouts = state.layouts + "Cena $n"
-            state.modified = true
+            val id = (state.layouts.maxOfOrNull { it.id } ?: 0) + 1
+            val sheetId = (state.layouts.maxOfOrNull { it.eventSheetId } ?: 0) + 1
+            val layout = LayoutInfo(id, "Cena $n", state.width, state.height, sheetId)
+            state.layouts = state.layouts + layout
+            state.activeLayoutId = id
+            state.selectedId = 0
+            state.markProjectChanged()
         }) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(6.dp)); Text("Adicionar cena") }
         Spacer(Modifier.height(12.dp))
         Text("Área de trabalho: ${state.width} × ${state.height}")
@@ -1534,6 +1637,14 @@ private fun ProjectManager(
 private fun LayoutEditor(state: EditorState, onObjectLongPress: () -> Unit) {
     var zoom by remember { mutableFloatStateOf(1f) }
     var pan by remember { mutableStateOf(Offset.Zero) }
+    val activeLayout = remember(state.layouts, state.activeLayoutId) {
+        state.layouts.firstOrNull { it.id == state.activeLayoutId } ?: state.layouts.firstOrNull()
+    }
+    val layoutWidth = activeLayout?.width ?: state.width
+    val layoutHeight = activeLayout?.height ?: state.height
+    val layoutObjects = remember(state.objects, state.objectRevision, state.activeLayoutId) {
+        state.objects.filter { it.layoutId == state.activeLayoutId }
+    }
     val latestZoom by rememberUpdatedState(zoom)
     val latestPan by rememberUpdatedState(pan)
     val decodedImages = rememberLoadedImages(state.assets) { error ->
@@ -1544,6 +1655,32 @@ private fun LayoutEditor(state: EditorState, onObjectLongPress: () -> Unit) {
             modifier = Modifier.fillMaxWidth().background(Color(0xFFE8EDF2)).padding(horizontal = 4.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            var layoutMenuExpanded by remember { mutableStateOf(false) }
+            Box {
+                OutlinedButton(
+                    onClick = { layoutMenuExpanded = true },
+                    modifier = Modifier.heightIn(min = 44.dp)
+                ) {
+                    Text(activeLayout?.name ?: "Cena")
+                }
+                DropdownMenu(expanded = layoutMenuExpanded, onDismissRequest = { layoutMenuExpanded = false }) {
+                    state.layouts.forEach { layout ->
+                        DropdownMenuItem(
+                            text = { Text(layout.name) },
+                            onClick = {
+                                state.activeLayoutId = layout.id
+                                state.width = layout.width
+                                state.height = layout.height
+                                state.selectedId = state.objects.firstOrNull { it.layoutId == layout.id }?.id ?: 0
+                                zoom = 1f
+                                pan = Offset.Zero
+                                layoutMenuExpanded = false
+                            }
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.width(4.dp))
             IconButton(onClick = { zoom = (zoom / 1.25f).coerceAtLeast(0.25f) }) {
                 Icon(Icons.Default.ZoomOut, contentDescription = "Diminuir zoom")
             }
@@ -1562,15 +1699,15 @@ private fun LayoutEditor(state: EditorState, onObjectLongPress: () -> Unit) {
         }
         Canvas(
             modifier = Modifier.fillMaxSize().background(Color(0xFF252A30))
-                .pointerInput(state.width, state.height) {
+                .pointerInput(layoutWidth, layoutHeight, state.activeLayoutId) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         val viewport = Size(size.width.toFloat(), size.height.toFloat())
                         var gestureZoom = latestZoom
                         var gesturePan = latestPan
-                        var currentTransform = SceneTransform(state.width, state.height, viewport, gestureZoom, gesturePan)
+                        var currentTransform = SceneTransform(layoutWidth, layoutHeight, viewport, gestureZoom, gesturePan)
                         val startPoint = down.position
-                        val initialHit = state.objects.lastOrNull { obj ->
+                        val initialHit = layoutObjects.lastOrNull { obj ->
                             currentTransform.screenRect(obj).contains(startPoint)
                         }
                         if (initialHit != null) state.selectedId = initialHit.id
@@ -1633,7 +1770,7 @@ private fun LayoutEditor(state: EditorState, onObjectLongPress: () -> Unit) {
                                     dragStarted = true
                                 }
                                 if (dragStarted) {
-                                    currentTransform = SceneTransform(state.width, state.height, viewport, gestureZoom, gesturePan)
+                                    currentTransform = SceneTransform(layoutWidth, layoutHeight, viewport, gestureZoom, gesturePan)
                                     val delta = if (lastPointerPosition == startPoint) {
                                         change.position - startPoint
                                     } else {
@@ -1660,9 +1797,9 @@ private fun LayoutEditor(state: EditorState, onObjectLongPress: () -> Unit) {
                 }
         ) {
             state.objectRevision
-            val transform = SceneTransform(state.width, state.height, Size(size.width, size.height), zoom, pan)
+            val transform = SceneTransform(layoutWidth, layoutHeight, Size(size.width, size.height), zoom, pan)
             drawRect(Color(0xFFF9FBFC), topLeft = transform.origin, size = transform.sceneSize)
-            for (obj in state.objects) {
+            for (obj in layoutObjects) {
                 if (!obj.visible || state.layers.none { it.id == obj.layerId && it.visible }) continue
                 val rect = transform.screenRect(obj)
                 rotate(obj.rotation, rect.center) {

@@ -82,6 +82,44 @@ class EngineTest {
         assertEquals(9f, runtime.globalVariables["score"] ?: 0f, 0.001f)
     }
 
+    @Test
+    fun runtimeOnlyLoadsObjectsAndEventsFromActiveLayout() {
+        val firstLayoutObject = LayoutObject(
+            id = 1, name = "Cena 1", plugin = "Sprite",
+            x = 10f, y = 10f, w = 20f, h = 20f, layoutId = 1
+        )
+        val secondLayoutObject = LayoutObject(
+            id = 2, name = "Cena 2", plugin = "Sprite",
+            x = 30f, y = 30f, w = 20f, h = 20f, layoutId = 2
+        )
+        val firstSheetEvent = EventRow(
+            id = 1, eventSheetId = 1,
+            actions = listOf(EventAction(kind = ActionKind.SET_VARIABLE, variable = "sheet", value = 1f))
+        )
+        val secondSheetEvent = EventRow(
+            id = 2, eventSheetId = 2,
+            actions = listOf(EventAction(kind = ActionKind.SET_VARIABLE, variable = "sheet", value = 2f))
+        )
+        val runtime = GameRuntime(
+            RuntimeProject(
+                width = 320,
+                height = 240,
+                objects = listOf(firstLayoutObject, secondLayoutObject),
+                layers = listOf(LayerModel(id = 1, name = "Principal")),
+                events = listOf(firstSheetEvent, secondSheetEvent),
+                globalVariables = emptyMap(),
+                activeLayoutId = 2,
+                activeEventSheetId = 2
+            )
+        )
+
+        runtime.step(0.05f, RuntimeInput())
+
+        assertEquals(1, runtime.objects.size)
+        assertEquals("Cena 2", runtime.objects.single().name)
+        assertEquals(2f, runtime.globalVariables["sheet"] ?: 0f, 0.001f)
+    }
+
     private fun runtime(
         objects: List<LayoutObject> = emptyList(),
         events: List<EventRow> = emptyList()

@@ -24,6 +24,9 @@ O runtime Android é Kotlin/JVM e independente da camada MFC do editor antigo. O
 | Animações | Sequência de imagens por objeto, duração por quadro, reordenação e remoção; runtime troca os quadros |
 | Depuração | Contagem de instâncias, variáveis globais e erro da última expressão/função |
 | Persistência `.ccproj` | Objetos, propriedades, layers, comportamentos, quadros, eventos, variáveis e imagens Base64 serializados em JSON |
+| Layouts independentes | Instâncias possuem `layoutId` e eventos possuem `eventSheetId`; o runtime filtra ambos pela cena ativa |
+
+Arquivos `.ccproj` versionados com layouts independentes usam `formatVersion: 2`. Arquivos anteriores usam uma única cena migrada automaticamente para o layout 1 e a folha de eventos 1.
 
 Os testes unitários de `EngineTest` cobrem movimentação direcional, execução de condição/expressão e evento de início único. Os testes de transformação da cena cobrem enquadramento em retrato/paisagem e zoom por foco.
 
@@ -31,7 +34,7 @@ Os testes unitários de `EngineTest` cobrem movimentação direcional, execuçã
 
 - Física não usa Box2D: gravidade e colisões são uma aproximação retangular simples; não há massa, impulso, juntas, sensores nem resolução robusta de colisões.
 - Colisões ignoram máscaras, polígonos e rotação. Sobreposição também usa retângulos sem rotação.
-- O editor atual trabalha com um conjunto compartilhado de objetos e eventos; várias cenas ainda não têm instâncias/event sheets independentes nem associação por layout.
+- Várias cenas possuem instâncias e folhas de eventos independentes, mas ainda não há transição completa entre layouts nem persistência de estado independente por cena durante o jogo.
 - O editor de eventos implementa apenas as condições, ações e expressões listadas acima. Plugins, behaviors e recursos do Construct que não estejam implementados não são executados.
 - Controles disponíveis no preview são direcionais e pular; teclado, gamepad, áudio, transições e depurador com inspeção/pausa/step ainda não foram implementados.
 - A edição de animações é uma sequência de quadros; não inclui pivôs, pontos de imagem, máscaras de colisão ou editor de imagem.
