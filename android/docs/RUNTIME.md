@@ -20,8 +20,8 @@ O runtime Android é Kotlin/JVM e independente da camada MFC do editor antigo. O
 |---|---|
 | Preview de cena/projeto em tela cheia | Implementado; usa os objetos, eventos, camadas e recursos do projeto aberto; não injeta controles/instâncias |
 | Loop do runtime | Passo limitado a 50 ms, animações e eventos atualizados em cada frame |
-| Eventos | `Sempre`, início da cena, tecla, toque, comparação numérica, sobreposição retangular, `Senão`, AND/OR e inversão |
-| Ações | Movimento, posição, variável global/local, rotação, criar instância a partir de modelo, remover instâncias e chamada de função |
+| Eventos | `Sempre`, início da cena, intervalo periódico, tecla, toque na cena/objeto, comparação numérica, sobreposição retangular, `Senão`, AND/OR e inversão |
+| Ações | Movimento, posição, variáveis global/local/instância, rotação, criar instância a partir de modelo, remover instâncias e chamada de função |
 | Estrutura de eventos | Grupos, comentários, funções e subeventos |
 | Expressões | Aritmética com `+`, `-`, `*`, `/`, parênteses e variáveis numéricas |
 | Behaviors | 8 direções, plataforma/gravity simples, projétil, sólido, seguir câmera e limitar à cena |
@@ -30,20 +30,21 @@ O runtime Android é Kotlin/JVM e independente da camada MFC do editor antigo. O
 | Depuração | FPS, contagem de instâncias, variáveis globais, estado dos eventos e erro da última expressão/função |
 | Assets | Importação de múltiplas imagens, renomeação e remoção no Project Bar |
 | Interface Android | Orientação paisagem, Project Bar e painel de propriedades retráteis por alças, barra inferior recolhível por gesto |
-| Persistência `.ccproj` | Objetos, propriedades, layers, comportamentos, quadros, eventos, variáveis e imagens Base64 serializados em JSON |
+| Persistência `.ccproj` | Objetos, propriedades, variáveis de instância, layers, comportamentos, quadros, eventos, variáveis e imagens Base64 serializados em JSON |
 | Layouts independentes | Instâncias possuem `layoutId` e eventos possuem `eventSheetId`; o runtime filtra ambos pela cena ativa |
 
 Arquivos `.ccproj` versionados com layouts independentes usam `formatVersion: 2`. Arquivos anteriores usam uma única cena migrada automaticamente para o layout 1 e a folha de eventos 1.
 
-Os testes unitários de `EngineTest` cobrem movimentação direcional, execução de condição/expressão e evento de início único. Os testes de transformação da cena cobrem enquadramento em retrato/paisagem e zoom por foco.
+Os testes unitários de `EngineTest` cobrem movimentação direcional, eventos, expressões, entrada por toque e teclado, câmera, criação de instâncias e isolamento por cena. Os testes de transformação da cena cobrem enquadramento em retrato/paisagem e zoom por foco.
 
 ## Limitações conhecidas — não equivale ao Construct 2
 
 - Física não usa Box2D: gravidade e colisões são uma aproximação retangular simples; não há massa, impulso, juntas, sensores nem resolução robusta de colisões.
 - Colisões ignoram máscaras, polígonos e rotação. Sobreposição também usa retângulos sem rotação.
+- A condição de toque em objeto usa coordenadas da cena e limites retangulares alinhados aos eixos; não considera rotação nem máscaras.
 - Várias cenas possuem instâncias e folhas de eventos independentes; não há ainda transição entre layouts nem persistência de estado independente por cena durante o jogo.
 - O preview aceita toque e teclado físico. Não insere controles virtuais nem objetos por padrão; não há suporte a gamepad.
-- O editor de eventos implementa apenas as condições, ações e expressões listadas acima. Else é avaliado contra o evento irmão anterior; não há loops, timers, áudio, parâmetros/retornos de funções nem variáveis de instância.
+- O editor de eventos implementa apenas as condições, ações e expressões listadas acima. Else é avaliado contra o evento irmão anterior; não há loops, temporizadores nomeados, áudio nem parâmetros/retornos de funções.
 - A edição de animações é uma sequência por objeto; não inclui pivôs, pontos de imagem, máscaras de colisão ou editor de imagem.
 - Assets são bitmaps PNG/JPEG importados e armazenados no `.ccproj`; áudio e fontes ainda não foram portados.
 - Arquivos `.cap` válidos podem ser preservados sem perda como arquivos originais, mas o conteúdo binário MFC não é convertido em objetos/eventos editáveis. Não salvar projetos Android como `.cap`.

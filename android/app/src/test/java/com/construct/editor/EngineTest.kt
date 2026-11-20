@@ -83,6 +83,49 @@ class EngineTest {
     }
 
     @Test
+    fun instanceVariablesCanBeEditedAndUsedByEventConditions() {
+        val player = LayoutObject(
+            id = 1, name = "Player", plugin = "Sprite",
+            x = 10f, y = 10f, w = 20f, h = 20f
+        )
+        val enemy = LayoutObject(
+            id = 2, name = "Enemy", plugin = "Sprite",
+            x = 50f, y = 10f, w = 20f, h = 20f
+        )
+        val initialize = EventRow(
+            id = 1,
+            actions = listOf(EventAction(
+                kind = ActionKind.SET_VARIABLE,
+                targetName = "Player",
+                variable = "instance:health",
+                value = 5f
+            ))
+        )
+        val check = EventRow(
+            id = 2,
+            conditions = listOf(EventCondition(
+                kind = ConditionKind.VARIABLE_COMPARE,
+                variable = "instance:health",
+                firstObject = "Player",
+                compare = CompareKind.GREATER,
+                value = 2f
+            )),
+            actions = listOf(EventAction(
+                kind = ActionKind.SET_VARIABLE,
+                variable = "playerAlive",
+                value = 1f
+            ))
+        )
+        val runtime = runtime(objects = listOf(player, enemy), events = listOf(initialize, check))
+
+        runtime.step(0.05f, RuntimeInput())
+
+        assertEquals(5f, runtime.objects.first { it.name == "Player" }.instanceVariables["health"] ?: 0f, 0f)
+        assertTrue("health" !in runtime.objects.first { it.name == "Enemy" }.instanceVariables)
+        assertEquals(1f, runtime.globalVariables["playerAlive"] ?: 0f, 0f)
+    }
+
+    @Test
     fun startOfLayoutRunsOnlyOnFirstRuntimeStep() {
         val initEvent = EventRow(
             id = 1,
@@ -97,6 +140,27 @@ class EngineTest {
 
         assertTrue(runtime.globalVariables.containsKey("initialized"))
         assertEquals(0f, runtime.globalVariables["initialized"] ?: -1f, 0f)
+    }
+
+    @Test
+    fun intervalConditionTriggersOnceAtEachElapsedBoundary() {
+        val event = EventRow(
+            id = 1,
+            conditions = listOf(EventCondition(
+                kind = ConditionKind.EVERY_X_SECONDS,
+                value = 0.1f
+            )),
+            actions = listOf(EventAction(
+                kind = ActionKind.ADD_VARIABLE,
+                variable = "ticks",
+                value = 1f
+            ))
+        )
+        val runtime = runtime(events = listOf(event))
+
+        repeat(4) { runtime.step(0.05f, RuntimeInput()) }
+
+        assertEquals(2f, runtime.globalVariables["ticks"] ?: 0f, 0.001f)
     }
 
     @Test
@@ -116,6 +180,35 @@ class EngineTest {
         runtime.step(0.05f, RuntimeInput(touchPressed = true))
 
         assertEquals(1f, runtime.globalVariables["tapped"] ?: 0f, 0.001f)
+    }
+
+    @Test
+    fun touchOnObjectConditionUsesTheTouchedWorldPosition() {
+        val target = LayoutObject(
+            id = 1, name = "Botao", plugin = "Sprite",
+            x = 100f, y = 70f, w = 20f, h = 20f
+        )
+        val event = EventRow(
+            id = 1,
+            conditions = listOf(EventCondition(
+                kind = ConditionKind.TOUCH_ON_OBJECT,
+                firstObject = "Botao"
+            )),
+            actions = listOf(EventAction(
+                kind = ActionKind.SET_VARIABLE,
+                variable = "clicked",
+                value = 1f
+            ))
+        )
+        val runtime = runtime(objects = listOf(target), events = listOf(event))
+
+        runtime.step(0.05f, RuntimeInput(touchPressed = true, touchX = 110f, touchY = 80f))
+        assertEquals(1f, runtime.globalVariables["clicked"] ?: 0f, 0.001f)
+
+        runtime.globalVariables["clicked"] = 0f
+        runtime.step(0.05f, RuntimeInput())
+        runtime.step(0.05f, RuntimeInput(touchPressed = true, touchX = 20f, touchY = 20f))
+        assertEquals(0f, runtime.globalVariables["clicked"] ?: 0f, 0.001f)
     }
 
     @Test

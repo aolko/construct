@@ -1,5 +1,6 @@
 package com.construct.editor
 
+import kotlin.math.floor
 import kotlin.math.sqrt
 
 enum class BehaviorKind {
@@ -37,7 +38,18 @@ data class LayerModel(
 
 enum class EventBlockKind { EVENT, GROUP, COMMENT, FUNCTION }
 
-enum class ConditionKind { ALWAYS, START_OF_LAYOUT, KEY_DOWN, TOUCH, VARIABLE_COMPARE, OVERLAP, ELSE, UNSUPPORTED }
+enum class ConditionKind {
+    ALWAYS,
+    START_OF_LAYOUT,
+    EVERY_X_SECONDS,
+    KEY_DOWN,
+    TOUCH,
+    TOUCH_ON_OBJECT,
+    VARIABLE_COMPARE,
+    OVERLAP,
+    ELSE,
+    UNSUPPORTED
+}
 
 enum class CompareKind { EQUAL, NOT_EQUAL, GREATER, LESS }
 enum class ConditionJoin { AND, OR }
@@ -153,6 +165,7 @@ class GameRuntime(project: RuntimeProject) {
         private set
     var elapsedSeconds = 0f
         private set
+    private var previousElapsedSeconds = 0f
     var lastError: String? = null
         private set
     var fps: Float = 0f
@@ -166,6 +179,7 @@ class GameRuntime(project: RuntimeProject) {
         eventStates.clear()
         val jumpInput = input.copy(jumpPressed = input.jumpPressed && "PULAR" !in previousInput)
         val eventInput = input.copy(touchPressed = input.touchPressed && "TOUCH" !in previousInput)
+        previousElapsedSeconds = elapsedSeconds
         elapsedSeconds += dt
         moveBehaviors(dt, jumpInput)
         runBlocks(events, eventInput, localVariables)
@@ -331,22 +345,47 @@ class GameRuntime(project: RuntimeProject) {
         val result = when (condition.kind) {
         ConditionKind.ALWAYS -> true
         ConditionKind.START_OF_LAYOUT -> startPending
+        ConditionKind.EVERY_X_SECONDS -> {
+            val interval = evaluateNumber(condition.valueExpression, condition.value, localScope)
+            if (interval <= 0f) {
+                lastError = "O intervalo do evento precisa ser maior que zero."
+                false
+            } else {
+                floor(previousElapsedSeconds / interval) < floor(elapsedSeconds / interval)
+            }
+        }
         ConditionKind.KEY_DOWN -> input.keyDown(condition.key)
         ConditionKind.TOUCH -> input.touchPressed
+        ConditionKind.TOUCH_ON_OBJECT -> input.touchPressed && objects.any { instance ->
+            val layer = layers[instance.layerId]
+            val layerX = input.touchX + cameraX * ((layer?.scrollX ?: 1f) - 1f)
+            val layerY = input.touchY + cameraY * ((layer?.scrollY ?: 1f) - 1f)
+            instance.name == condition.firstObject &&
+                layerX >= instance.x && layerX <= instance.x + instance.w &&
+                layerY >= instance.y && layerY <= instance.y + instance.h
+        }
         ConditionKind.ELSE -> !previousSiblingPassed
         ConditionKind.VARIABLE_COMPARE -> {
             val name = condition.variable.removePrefix("local:").removePrefix("global:")
-            val actual = if (condition.variable.startsWith("local:")) {
-                localScope[name] ?: 0f
-            } else {
-                globalVariables[name] ?: 0f
-            }
             val comparison = evaluateNumber(condition.valueExpression, condition.value, localScope)
-            when (condition.compare) {
-                CompareKind.EQUAL -> actual == comparison
-                CompareKind.NOT_EQUAL -> actual != comparison
-                CompareKind.GREATER -> actual > comparison
-                CompareKind.LESS -> actual < comparison
+            if (condition.variable.startsWith("instance:")) {
+                val variableName = condition.variable.removePrefix("instance:")
+                objects.asSequence()
+                    .filter { condition.firstObject.isBlank() || it.name == condition.firstObject }
+                    .any { instance ->
+                        compare(
+                            instance.instanceVariables[variableName] ?: 0f,
+                            comparison,
+                            condition.compare
+                        )
+                    }
+            } else {
+                val actual = if (condition.variable.startsWith("local:")) {
+                    localScope[name] ?: 0f
+                } else {
+                    globalVariables[name] ?: 0f
+                }
+                compare(actual, comparison, condition.compare)
             }
         }
         ConditionKind.OVERLAP -> {
@@ -377,12 +416,23 @@ class GameRuntime(project: RuntimeProject) {
             ActionKind.SET_VARIABLE -> {
                 if (action.variable.startsWith("local:")) {
                     localScope[action.variable.removePrefix("local:")] = value
+                } else if (action.variable.startsWith("instance:")) {
+                    val name = action.variable.removePrefix("instance:")
+                    targets.forEach { instance ->
+                        instance.instanceVariables = instance.instanceVariables + (name to value)
+                    }
                 } else globalVariables[action.variable.removePrefix("global:")] = value
             }
             ActionKind.ADD_VARIABLE -> {
                 if (action.variable.startsWith("local:")) {
                     val name = action.variable.removePrefix("local:")
                     localScope[name] = (localScope[name] ?: 0f) + value
+                } else if (action.variable.startsWith("instance:")) {
+                    val name = action.variable.removePrefix("instance:")
+                    targets.forEach { instance ->
+                        instance.instanceVariables = instance.instanceVariables +
+                            (name to ((instance.instanceVariables[name] ?: 0f) + value))
+                    }
                 } else {
                     val name = action.variable.removePrefix("global:")
                     globalVariables[name] = (globalVariables[name] ?: 0f) + value
@@ -456,6 +506,13 @@ class GameRuntime(project: RuntimeProject) {
 
     private fun intersects(a: LayoutObject, b: LayoutObject) =
         overlapsX(a, b) && a.y < b.y + b.h && a.y + a.h > b.y
+
+    private fun compare(actual: Float, expected: Float, compare: CompareKind) = when (compare) {
+        CompareKind.EQUAL -> actual == expected
+        CompareKind.NOT_EQUAL -> actual != expected
+        CompareKind.GREATER -> actual > expected
+        CompareKind.LESS -> actual < expected
+    }
 }
 
 private class ExpressionEvaluator(

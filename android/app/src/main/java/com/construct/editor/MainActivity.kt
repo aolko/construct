@@ -95,7 +95,8 @@ data class LayoutObject(
     var behaviors: List<BehaviorSpec> = emptyList(),
     var animationName: String = "Parado",
     var animationFrames: List<AnimationFrame> = emptyList(),
-    var frameDuration: Float = 0.15f
+    var frameDuration: Float = 0.15f,
+    var instanceVariables: Map<String, Float> = emptyMap()
 )
 
 data class LayoutInfo(
@@ -330,7 +331,7 @@ class MainActivity : ComponentActivity() {
         startLayoutId = state.startLayoutId,
         objectTypes = state.objectTypes.toList(),
         layers = state.layers.map { it.copy() },
-        objects = state.objects.map { it.copy() },
+        objects = state.objects.map { it.copy(instanceVariables = it.instanceVariables.toMap()) },
         events = state.events.map { it.copy(conditions = it.conditions.toList(), actions = it.actions.toList(), children = it.children.toList()) },
         globalVariables = state.globalVariables.toMap(),
         assets = state.assets.map { it.copy() }
@@ -450,6 +451,9 @@ class MainActivity : ComponentActivity() {
                 .put("assetId", o.assetId)
                 .put("animationName", o.animationName)
                 .put("frameDuration", o.frameDuration)
+                .put("instanceVariables", JSONObject().also { values ->
+                    o.instanceVariables.forEach { (name, value) -> values.put(name, value) }
+                })
                 .put("behaviors", JSONArray().also { behaviors ->
                     o.behaviors.forEach { b ->
                         behaviors.put(JSONObject().put("kind", b.kind.name)
@@ -538,7 +542,10 @@ class MainActivity : ComponentActivity() {
                 animationName = o.optString("animationName", "Parado"),
                 behaviors = readBehaviors(o.optJSONArray("behaviors")),
                 frameDuration = o.optDouble("frameDuration", 0.15).toFloat(),
-                animationFrames = readAnimationFrames(o.optJSONArray("animationFrames")))
+                animationFrames = readAnimationFrames(o.optJSONArray("animationFrames")),
+                instanceVariables = o.optJSONObject("instanceVariables")?.let { values ->
+                    buildMap { values.keys().forEach { name -> put(name, values.optDouble(name).toFloat()) } }
+                } ?: emptyMap())
         }
         val loadedEvents = mutableListOf<EventRow>()
         val eventArray = root.optJSONArray("events") ?: JSONArray()
@@ -970,6 +977,9 @@ private fun PropertiesPanel(
             val selected = remember(state.objects, state.selectedId, state.objectRevision) {
                 state.objects.firstOrNull { it.id == state.selectedId }
             }
+            var instanceVariableName by remember(selected?.id) { mutableStateOf("") }
+            var instanceVariableValue by remember(selected?.id) { mutableStateOf("0") }
+            var instanceVariableError by remember(selected?.id) { mutableStateOf<String?>(null) }
             Surface(
                 modifier = modifier.fillMaxHeight(),
                 tonalElevation = 2.dp
@@ -1093,6 +1103,76 @@ private fun PropertiesPanel(
                                         it.layoutId == state.activeLayoutId && it.name == name
                                     }?.id ?: selected.layerId
                                     state.markObjectsChanged()
+                                }
+                                Text(
+                                    "Variáveis da instância",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    modifier = Modifier.padding(top = 8.dp)
+                                )
+                                selected.instanceVariables.toSortedMap().forEach { (name, value) ->
+                                    var editedValue by remember(selected.id, name, value) {
+                                        mutableStateOf(value.toString())
+                                    }
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(name, Modifier.weight(1f))
+                                        OutlinedTextField(
+                                            value = editedValue,
+                                            onValueChange = { text ->
+                                                editedValue = text
+                                                text.toFloatOrNull()?.let { number ->
+                                                    selected.instanceVariables =
+                                                        selected.instanceVariables + (name to number)
+                                                    state.markObjectsChanged()
+                                                }
+                                            },
+                                            label = { Text("Valor") },
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        IconButton(onClick = {
+                                            selected.instanceVariables = selected.instanceVariables - name
+                                            state.markObjectsChanged()
+                                        }) { Icon(Icons.Default.Delete, contentDescription = "Excluir variável $name") }
+                                    }
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    OutlinedTextField(
+                                        value = instanceVariableName,
+                                        onValueChange = {
+                                            instanceVariableName = it
+                                            instanceVariableError = null
+                                        },
+                                        label = { Text("Nova variável") },
+                                        modifier = Modifier.weight(1f),
+                                        isError = instanceVariableError != null
+                                    )
+                                    OutlinedTextField(
+                                        value = instanceVariableValue,
+                                        onValueChange = {
+                                            instanceVariableValue = it
+                                            instanceVariableError = null
+                                        },
+                                        label = { Text("Valor") },
+                                        modifier = Modifier.weight(1f),
+                                        isError = instanceVariableError != null
+                                    )
+                                    IconButton(onClick = {
+                                        val number = instanceVariableValue.toFloatOrNull()
+                                        instanceVariableError = when {
+                                            instanceVariableName.isBlank() -> "Informe o nome."
+                                            number == null -> "Informe um número."
+                                            else -> null
+                                        }
+                                        if (instanceVariableError == null && number != null) {
+                                            selected.instanceVariables =
+                                                selected.instanceVariables + (instanceVariableName to number)
+                                            instanceVariableName = ""
+                                            instanceVariableValue = "0"
+                                            state.markObjectsChanged()
+                                        }
+                                    }) { Icon(Icons.Default.Add, contentDescription = "Adicionar variável da instância") }
+                                }
+                                instanceVariableError?.let {
+                                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                                 }
                                 Text("Comportamentos", style = MaterialTheme.typography.titleSmall,
                                     modifier = Modifier.padding(top = 8.dp))
@@ -1516,7 +1596,7 @@ private fun EventBlockEditor(
                     style = MaterialTheme.typography.labelLarge,
                     modifier = Modifier.weight(1f)
                 )
-                if (event.blockKind == EventBlockKind.EVENT) {
+                if (event.blockKind == EventBlockKind.EVENT || event.blockKind == EventBlockKind.GROUP) {
                     Switch(checked = event.enabled, onCheckedChange = { onChange(event.copy(enabled = it)) })
                 }
                 IconButton(onClick = onDuplicate) {
@@ -1548,10 +1628,22 @@ private fun EventBlockEditor(
                     }
                 }
                 event.conditions.forEachIndexed { index, condition ->
-                    ConditionEditor(condition, objectNames) { changed ->
-                        onChange(event.copy(conditions = event.conditions.toMutableList().also { it[index] = changed }))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        ConditionEditor(condition, objectNames, Modifier.weight(1f)) { changed ->
+                            onChange(event.copy(conditions = event.conditions.toMutableList().also { it[index] = changed }))
+                        }
+                        if (event.conditions.size > 1) {
+                            IconButton(onClick = {
+                                onChange(event.copy(conditions = event.conditions.toMutableList().also { it.removeAt(index) }))
+                            }) { Icon(Icons.Default.Delete, contentDescription = "Remover condição") }
+                        }
                     }
-                    if (index > 0) Text("E", color = MaterialTheme.colorScheme.primary)
+                    if (index < event.conditions.lastIndex) {
+                        Text(
+                            if (event.conditionJoin == ConditionJoin.AND) "E" else "OU",
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
                 }
                 Row {
                     TextButton(onClick = {
@@ -1563,8 +1655,15 @@ private fun EventBlockEditor(
                 }
                 HorizontalDivider()
                 event.actions.forEachIndexed { index, action ->
-                    ActionEditor(action, objectNames) { changed ->
-                        onChange(event.copy(actions = event.actions.toMutableList().also { it[index] = changed }))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        ActionEditor(action, objectNames, Modifier.weight(1f)) { changed ->
+                            onChange(event.copy(actions = event.actions.toMutableList().also { it[index] = changed }))
+                        }
+                        if (event.actions.size > 1) {
+                            IconButton(onClick = {
+                                onChange(event.copy(actions = event.actions.toMutableList().also { it.removeAt(index) }))
+                            }) { Icon(Icons.Default.Delete, contentDescription = "Remover ação") }
+                        }
                     }
                 }
             }
@@ -1576,9 +1675,10 @@ private fun EventBlockEditor(
 private fun ConditionEditor(
     condition: EventCondition,
     objectNames: List<String>,
+    modifier: Modifier = Modifier,
     onChange: (EventCondition) -> Unit
 ) {
-    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+    Column(modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         EnumChoice(conditionLabel(condition.kind), ConditionKind.entries.map(::conditionLabel)) { label ->
             ConditionKind.entries.firstOrNull { conditionLabel(it) == label }
                 ?.let { onChange(condition.copy(kind = it)) }
@@ -1588,9 +1688,29 @@ private fun ConditionEditor(
                 onChange(condition.copy(key = it))
             }
             ConditionKind.TOUCH -> Text("Verdadeira durante um toque na área do jogo.")
+            ConditionKind.TOUCH_ON_OBJECT -> {
+                if (objectNames.isEmpty()) {
+                    Text("Crie um objeto na cena para configurar esta condição.")
+                } else {
+                    EnumChoice(condition.firstObject.ifBlank { "Selecione um objeto" }, objectNames) {
+                        onChange(condition.copy(firstObject = it))
+                    }
+                }
+                Text("Verdadeira quando a área tocada estiver sobre uma instância.")
+            }
             ConditionKind.VARIABLE_COMPARE -> {
                 OutlinedTextField(condition.variable, { onChange(condition.copy(variable = it)) },
-                    label = { Text("Variável (use local:nome para variável local)") }, modifier = Modifier.fillMaxWidth())
+                    label = { Text("Variável (global:, local: ou instance:)") }, modifier = Modifier.fillMaxWidth())
+                if (condition.variable.startsWith("instance:")) {
+                    if (objectNames.isEmpty()) {
+                        Text("Crie um objeto na cena para comparar uma variável da instância.")
+                    } else {
+                        EnumChoice(condition.firstObject.ifBlank { "Todas as instâncias" },
+                            listOf("Todas as instâncias") + objectNames) { selected ->
+                            onChange(condition.copy(firstObject = if (selected == "Todas as instâncias") "" else selected))
+                        }
+                    }
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     EnumChoice(condition.compareLabel(), CompareKind.entries.map { it.label() }) { label ->
                         CompareKind.entries.firstOrNull { it.label() == label }
@@ -1609,6 +1729,12 @@ private fun ConditionEditor(
                     onChange(condition.copy(secondObject = it))
                 }
             }
+            ConditionKind.EVERY_X_SECONDS -> OutlinedTextField(
+                condition.valueExpression.ifBlank { condition.value.toString() },
+                { onChange(condition.copy(valueExpression = it)) },
+                label = { Text("Intervalo em segundos") },
+                modifier = Modifier.fillMaxWidth()
+            )
             ConditionKind.ALWAYS, ConditionKind.START_OF_LAYOUT, ConditionKind.ELSE, ConditionKind.UNSUPPORTED -> Unit
         }
         if (condition.kind != ConditionKind.ALWAYS && condition.kind != ConditionKind.UNSUPPORTED) {
@@ -1627,9 +1753,10 @@ private fun ConditionEditor(
 private fun ActionEditor(
     action: EventAction,
     objectNames: List<String>,
+    modifier: Modifier = Modifier,
     onChange: (EventAction) -> Unit
 ) {
-    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+    Column(modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         EnumChoice(actionLabel(action.kind), ActionKind.entries.map(::actionLabel)) { label ->
             ActionKind.entries.firstOrNull { actionLabel(it) == label }
                 ?.let { onChange(action.copy(kind = it)) }
@@ -1656,7 +1783,13 @@ private fun ActionEditor(
             }
             ActionKind.SET_VARIABLE, ActionKind.ADD_VARIABLE -> {
                 OutlinedTextField(action.variable, { onChange(action.copy(variable = it)) },
-                    label = { Text("Variável (local:nome para local)") }, modifier = Modifier.fillMaxWidth())
+                    label = { Text("Variável (global:, local: ou instance:)") }, modifier = Modifier.fillMaxWidth())
+                if (action.variable.startsWith("instance:")) {
+                    EnumChoice(action.targetName.ifBlank { "Todas as instâncias" },
+                        listOf("Todas as instâncias") + objectNames) { selected ->
+                        onChange(action.copy(targetName = if (selected == "Todas as instâncias") "" else selected))
+                    }
+                }
                 OutlinedTextField(action.valueExpression.ifBlank { action.value.toString() }, {
                     onChange(action.copy(valueExpression = it))
                 }, label = { Text("Expressão") }, modifier = Modifier.fillMaxWidth())
@@ -1686,8 +1819,10 @@ private fun ActionEditor(
 private fun conditionLabel(kind: ConditionKind) = when (kind) {
     ConditionKind.ALWAYS -> "Sempre"
     ConditionKind.START_OF_LAYOUT -> "Ao iniciar a cena"
+    ConditionKind.EVERY_X_SECONDS -> "A cada intervalo"
     ConditionKind.KEY_DOWN -> "Tecla/controle pressionado"
     ConditionKind.TOUCH -> "Toque na cena"
+    ConditionKind.TOUCH_ON_OBJECT -> "Toque em objeto"
     ConditionKind.VARIABLE_COMPARE -> "Comparar variável"
     ConditionKind.OVERLAP -> "Objetos se sobrepõem"
     ConditionKind.ELSE -> "Senão (evento anterior não atendido)"
@@ -1925,7 +2060,9 @@ private fun GamePreviewScreen(
     var down by remember { mutableStateOf(false) }
     var jump by remember { mutableStateOf(false) }
     var touchPressed by remember { mutableStateOf(false) }
-    val latestInput by rememberUpdatedState(RuntimeInput(left, right, up, down, jump, touchPressed))
+    var touchX by remember { mutableFloatStateOf(0f) }
+    var touchY by remember { mutableFloatStateOf(0f) }
+    val latestInput by rememberUpdatedState(RuntimeInput(left, right, up, down, jump, touchPressed, touchX, touchY))
     var frameTick by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(Unit) { focusRequester.requestFocus() }
@@ -1974,7 +2111,15 @@ private fun GamePreviewScreen(
         Box(Modifier.weight(1f).fillMaxWidth().background(Color(0xFF111820))) {
             Canvas(
                 Modifier.fillMaxSize().pointerInput(runtime) {
-                    detectTapGestures {
+                    detectTapGestures { offset ->
+                        val scale = min(
+                            size.width / runtime.width.toFloat(),
+                            size.height / runtime.height.toFloat()
+                        ) * runtime.cameraZoom
+                        if (scale > 0f) {
+                            touchX = runtime.cameraX + (offset.x - size.width / 2f) / scale
+                            touchY = runtime.cameraY + (offset.y - size.height / 2f) / scale
+                        }
                         touchPressed = true
                     }
                 }
