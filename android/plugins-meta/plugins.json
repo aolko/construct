@@ -1,0 +1,11 @@
+{
+  "formatVersion": 1,
+  "plugins": [
+    {"name":"Sprite","filename":"Sprite.csx","edition":"Android subset","supported":true,"supportsRuntime":true,"runtimeScope":"Bitmap rendering and frame sequences; no image points or collision masks"},
+    {"name":"Text","filename":"Text.csx","edition":"Android subset","supported":true,"supportsRuntime":true,"runtimeScope":"Static text content and transform"},
+    {"name":"Tiled background","filename":"Tiled Background.csx","edition":"Not ported","supported":false,"supportsRuntime":false},
+    {"name":"Mouse & keyboard","filename":"Mouse n Keyboard.csx","edition":"Not ported; system input subset only","supported":false,"supportsRuntime":true,"runtimeScope":"Physical arrows, WASD, space and touch condition; no mouse object"},
+    {"name":"System","filename":"built-in","edition":"Android subset","supported":true,"supportsRuntime":true,"runtimeScope":"Listed event conditions/actions including playback of imported audio; see android/docs/RUNTIME.md"}
+  ],
+  "policy":"Unknown plugin and behavior payloads are preserved as opaque bytes. Runtime scope is intentionally explicit; this is not full Classic/C2/C3 plugin compatibility."
+}
