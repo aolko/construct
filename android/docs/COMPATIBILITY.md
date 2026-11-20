@@ -24,6 +24,9 @@ To preserve compatibility honestly:
 5. A future phase should implement the MFC CArchive stream parser and class serializers using the
    original `Serialize` methods under `IDE/` and `Runtime/`.
 
+The Android `.ccproj` runtime and its implemented behaviors/events are described in
+[`RUNTIME.md`](RUNTIME.md). They do not imply semantic `.cap` import/export compatibility.
+
 ## Plugin handling
 
 The app exposes plugin metadata in `android/plugins-meta/plugins.json`. Plugins absent from that
