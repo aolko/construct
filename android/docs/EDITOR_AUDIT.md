@@ -9,8 +9,8 @@
 | Runtime Android | Kotlin/JVM (`Engine.kt`), passo por frame dentro do preview Compose |
 | JNI/C++ | `construct_core.cpp` reconhece o cabeçalho `Construct1.7` e copia bytes `.cap`; não implementa o runtime de jogo nem desserializa `CArchive` |
 | Projeto editável | `.ccproj` em JSON; leia/escreva pelo Android Storage Access Framework |
-| Imagens | Importação de múltiplas imagens, reamostragem, PNG/Base64 dentro do documento |
-| Integração Android | Activity Compose, configuração de tela paisagem, assets de imagem em armazenamento próprio do projeto |
+| Recursos | Importação de múltiplas imagens e áudio; imagem é reamostrada e normalizada como PNG/Base64 |
+| Integração Android | Activity Compose, configuração de tela paisagem, mídia em Base64 dentro do projeto |
 
 ## Classificação por recurso
 
@@ -22,15 +22,16 @@
 | Zoom, pan, seleção, arraste e redimensionamento | Parcial | Implementados no Canvas; não foram exercitados em aparelho nesta execução |
 | Painéis | Parcial | Project Bar/propriedades com alças laterais; scroll vertical próprio |
 | Barra de ferramentas inferior | Parcial | Recolhe/expande por gesto em área dedicada |
-| Importação de recursos | Parcial | Imagens múltiplas, renomeação e remoção; não há importação de áudio/fontes nem substituição de arquivo |
+| Importação de recursos | Parcial | Imagens/áudio múltiplos, renomeação e remoção; fontes e substituição ainda não suportadas |
 | Animações | Parcial | Uma sequência nomeada por objeto, frames, tempo, reordenação, duplicação, remoção e playback |
-| Eventos | Parcial | AND/OR, inversão, Else, duplicação, grupos, subeventos, comentários, funções, teclado/toque, comparações, sobreposição e ações listadas em `RUNTIME.md` |
+| Eventos | Parcial | AND/OR, inversão, Else, repetição limitada, duplicação, grupos, subeventos, comentários, funções, teclado/toque, comparações, sobreposição, reprodução de áudio e ações listadas em `RUNTIME.md` |
 | Behaviors | Parcial | Movimento/gravidade/colisão retangular simplificados; sem equivalência física ao Construct |
 | Câmera | Parcial | Seguir instância, zoom e clamp retangular; sem múltiplas câmeras ou transições |
 | Depuração | Parcial | FPS, contagem, variáveis, estados de condição e erros; sem pausa, step, breakpoint ou edição ao vivo |
 | `.cap` | Preservação apenas | Reconhece cabeçalho e preserva bytes; não edita semanticamente projetos Classic |
 | Plugins Classic/C2/C3 | Não portados em geral | Só o subconjunto indicado em `plugins-meta/plugins.json`; plugins desconhecidos não são executados |
-| Physics, áudio e transições | Não implementados | Não anunciados como funcionais |
+| Physics e transições | Não implementados completamente | Física robusta e transições de cena ainda não estão disponíveis |
+| Áudio | Parcial | Importação e reprodução por evento; não há editor de áudio, mixagem ou controles avançados |
 
 ## Referência de versões e decisões
 

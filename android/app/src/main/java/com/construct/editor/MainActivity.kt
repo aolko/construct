@@ -2,6 +2,7 @@ package com.construct.editor
 
 import android.net.Uri
 import android.os.Bundle
+import android.media.MediaPlayer
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Paint
@@ -49,6 +50,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.Canvas
@@ -67,6 +69,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import android.webkit.MimeTypeMap
 import java.io.ByteArrayOutputStream
 import android.util.Base64
 import kotlin.math.min
@@ -203,63 +206,81 @@ class MainActivity : ComponentActivity() {
                     state = state,
                     onOpen = { openCap.launch(arrayOf("*/*")) },
                     onSave = { saveProject.launch("${state.projectName}.ccproj") },
-                    onImport = { importImage.launch(arrayOf("image/*")) }
+                    onImport = { importImage.launch(arrayOf("image/*", "audio/*")) }
                 )
             }
         }
     }
 
     private fun importImages(uris: List<Uri>) = lifecycleScope.launch {
-        state.notice = "Importando ${uris.size} imagem(ns)…"
+        state.notice = "Importando ${uris.size} recurso(s)…"
         val animationTargetId = state.animationTargetId
         try {
             for (uri in uris) {
                 val assetId = (state.assets.maxOfOrNull { it.id } ?: 0) + 1
+                val mimeType = contentResolver.getType(uri)
+                    ?: MimeTypeMap.getSingleton().getMimeTypeFromExtension(
+                        uri.lastPathSegment?.substringAfterLast('.', "")?.lowercase().orEmpty()
+                    )
+                    ?: "application/octet-stream"
                 val asset = withContext(Dispatchers.IO) {
                 val source = requireNotNull(contentResolver.openInputStream(uri)) {
-                    "Não foi possível ler a imagem."
+                    "Não foi possível ler o recurso."
                 }.use { it.readBytes() }
-                require(source.isNotEmpty()) { "A imagem selecionada está vazia." }
-                require(source.size <= 32 * 1024 * 1024) { "A imagem excede o limite de 32 MB." }
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeByteArray(source, 0, source.size, bounds)
-                require(bounds.outWidth > 0 && bounds.outHeight > 0) { "O arquivo não é uma imagem compatível." }
-                var sampleSize = 1
-                while (bounds.outWidth / sampleSize > 2048 || bounds.outHeight / sampleSize > 2048) {
-                    sampleSize *= 2
+                require(source.isNotEmpty()) { "O recurso selecionado está vazio." }
+                require(source.size <= 32 * 1024 * 1024) { "O recurso excede o limite de 32 MB." }
+                if (mimeType.startsWith("image/")) {
+                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeByteArray(source, 0, source.size, bounds)
+                    require(bounds.outWidth > 0 && bounds.outHeight > 0) { "O arquivo não é uma imagem compatível." }
+                    var sampleSize = 1
+                    while (bounds.outWidth / sampleSize > 2048 || bounds.outHeight / sampleSize > 2048) {
+                        sampleSize *= 2
+                    }
+                    val bitmap = BitmapFactory.decodeByteArray(
+                        source, 0, source.size, BitmapFactory.Options().apply { inSampleSize = sampleSize }
+                    ) ?: error("Não foi possível decodificar a imagem.")
+                    val encoded = ByteArrayOutputStream().use { output ->
+                        bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+                        Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
+                    }
+                    bitmap.recycle()
+                    ImageAsset(
+                        id = assetId,
+                        name = uri.lastPathSegment?.substringAfterLast('/') ?: "Imagem",
+                        mimeType = "image/png",
+                        base64 = encoded
+                    )
+                } else if (mimeType.startsWith("audio/")) {
+                    ImageAsset(
+                        id = assetId,
+                        name = uri.lastPathSegment?.substringAfterLast('/') ?: "Áudio",
+                        mimeType = mimeType,
+                        base64 = Base64.encodeToString(source, Base64.NO_WRAP)
+                    )
+                } else {
+                    error("Tipo não suportado: $mimeType. Importe imagens ou áudio.")
                 }
-                val bitmap = BitmapFactory.decodeByteArray(
-                    source, 0, source.size, BitmapFactory.Options().apply { inSampleSize = sampleSize }
-                ) ?: error("Não foi possível decodificar a imagem.")
-                val encoded = ByteArrayOutputStream().use { output ->
-                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
-                    Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
-                }
-                bitmap.recycle()
-                ImageAsset(
-                    id = assetId,
-                    name = uri.lastPathSegment?.substringAfterLast('/') ?: "Imagem",
-                    mimeType = "image/png",
-                    base64 = encoded
-                )
                 }
                 state.assets = state.assets + asset
-                val animationTarget = state.objects.firstOrNull { it.id == animationTargetId }
-                if (animationTarget != null) {
-                    animationTarget.animationFrames = animationTarget.animationFrames + AnimationFrame(asset.id)
-                    state.markObjectsChanged()
-                } else {
-                    val objectId = (state.objects.maxOfOrNull { it.id } ?: 0) + 1
-                    state.objects = state.objects + LayoutObject(
-                        objectId, asset.name.substringBeforeLast('.'), "Sprite",
-                        220f, 180f, 128f, 128f, layoutId = state.activeLayoutId,
-                        layerId = state.activeLayerId(), assetId = asset.id
-                    )
-                    state.selectedId = objectId
-                    state.markObjectsChanged()
+                if (asset.mimeType.startsWith("image/")) {
+                    val animationTarget = state.objects.firstOrNull { it.id == animationTargetId }
+                    if (animationTarget != null) {
+                        animationTarget.animationFrames = animationTarget.animationFrames + AnimationFrame(asset.id)
+                        state.markObjectsChanged()
+                    } else {
+                        val objectId = (state.objects.maxOfOrNull { it.id } ?: 0) + 1
+                        state.objects = state.objects + LayoutObject(
+                            objectId, asset.name.substringBeforeLast('.'), "Sprite",
+                            220f, 180f, 128f, 128f, layoutId = state.activeLayoutId,
+                            layerId = state.activeLayerId(), assetId = asset.id
+                        )
+                        state.selectedId = objectId
+                        state.markObjectsChanged()
+                    }
                 }
             }
-            state.notice = if (animationTargetId != 0) "Quadro(s) importado(s)" else "Imagem(ns) importada(s)"
+            state.notice = if (animationTargetId != 0) "Recursos importados; imagens adicionadas à animação" else "Recursos importados"
         } catch (error: Exception) {
             state.notice = "Falha ao importar imagem: ${error.message ?: "erro desconhecido"}"
         } finally {
@@ -361,7 +382,8 @@ class MainActivity : ComponentActivity() {
                 array.put(JSONObject().put("kind", action.kind.name).put("targetName", action.targetName)
                     .put("variable", action.variable).put("value", action.value)
                     .put("valueY", action.valueY).put("functionName", action.functionName)
-                    .put("valueExpression", action.valueExpression).put("valueYExpression", action.valueYExpression))
+                    .put("valueExpression", action.valueExpression).put("valueYExpression", action.valueYExpression)
+                    .put("audioAssetId", action.audioAssetId))
             }
         })
         .put("children", JSONArray().also { array -> event.children.forEach { array.put(serializeEvent(it)) } })
@@ -396,7 +418,8 @@ class MainActivity : ComponentActivity() {
                     valueY = value.optDouble("valueY").toFloat(),
                     functionName = value.optString("functionName"),
                     valueExpression = value.optString("valueExpression"),
-                    valueYExpression = value.optString("valueYExpression")
+                    valueYExpression = value.optString("valueYExpression"),
+                    audioAssetId = value.optInt("audioAssetId", 0)
                 )
             }
         } ?: listOf(EventAction(ActionKind.UNSUPPORTED))
@@ -937,7 +960,7 @@ private fun ProjectBar(state: EditorState, onImport: () -> Unit, modifier: Modif
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Recursos", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
                 IconButton(onClick = onImport) {
-                    Icon(Icons.Default.AddPhotoAlternate, contentDescription = "Importar imagem")
+                    Icon(Icons.Default.AddPhotoAlternate, contentDescription = "Importar imagem ou áudio")
                 }
             }
             state.assets.forEach { asset ->
@@ -1489,6 +1512,7 @@ private fun EventEditor(state: EditorState, modifier: Modifier = Modifier) {
                     event = event,
                     depth = depth,
                     objectNames = state.objects.filter { it.layoutId == state.activeLayoutId }.map { it.name },
+                    audioAssets = state.assets.filter { it.mimeType.startsWith("audio/") }.map { it.id to it.name },
                     onDuplicate = {
                         val copy = duplicateEventTree(event) { state.nextEventId++ }
                         state.events = insertEventAfter(state.events, event.id, copy)
@@ -1578,6 +1602,7 @@ private fun EventBlockEditor(
     event: EventRow,
     depth: Int,
     objectNames: List<String>,
+    audioAssets: List<Pair<Int, String>>,
     onDuplicate: () -> Unit,
     onChange: (EventRow) -> Unit,
     onDelete: () -> Unit
@@ -1682,7 +1707,7 @@ private fun EventBlockEditor(
                 HorizontalDivider()
                 event.actions.forEachIndexed { index, action ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        ActionEditor(action, objectNames, Modifier.weight(1f)) { changed ->
+                        ActionEditor(action, objectNames, audioAssets, Modifier.weight(1f)) { changed ->
                             onChange(event.copy(actions = event.actions.toMutableList().also { it[index] = changed }))
                         }
                         if (event.actions.size > 1) {
@@ -1779,6 +1804,7 @@ private fun ConditionEditor(
 private fun ActionEditor(
     action: EventAction,
     objectNames: List<String>,
+    audioAssets: List<Pair<Int, String>>,
     modifier: Modifier = Modifier,
     onChange: (EventAction) -> Unit
 ) {
@@ -1834,6 +1860,20 @@ private fun ActionEditor(
                 action.functionName, { onChange(action.copy(functionName = it)) },
                 label = { Text("Função") }, modifier = Modifier.fillMaxWidth()
             )
+            ActionKind.PLAY_AUDIO -> {
+                val options = audioAssets.map { (id, name) -> "$name (#$id)" }
+                val current = audioAssets.firstOrNull { it.first == action.audioAssetId }
+                    ?.let { (id, name) -> "$name (#$id)" }
+                    ?: "Selecione um áudio"
+                if (options.isEmpty()) {
+                    Text("Importe um arquivo de áudio no painel Projeto para usar esta ação.")
+                } else {
+                    EnumChoice(current, listOf("Selecione um áudio") + options) { selected ->
+                        val selectedId = audioAssets.firstOrNull { (id, name) -> "$name (#$id)" == selected }?.first ?: 0
+                        onChange(action.copy(audioAssetId = selectedId))
+                    }
+                }
+            }
             ActionKind.UNSUPPORTED -> Text(
                 "Este bloco veio de uma versão anterior sem semântica conhecida e não será executado.",
                 color = Color(0xFF8A5A00)
@@ -1862,6 +1902,7 @@ private fun actionLabel(kind: ActionKind) = when (kind) {
     ActionKind.ADD_VARIABLE -> "Somar à variável"
     ActionKind.DESTROY_INSTANCE -> "Destruir objeto"
     ActionKind.CREATE_INSTANCE -> "Criar instância"
+    ActionKind.PLAY_AUDIO -> "Reproduzir áudio"
     ActionKind.ROTATE -> "Definir rotação"
     ActionKind.CALL_FUNCTION -> "Chamar função"
     ActionKind.UNSUPPORTED -> "Ação desconhecida (preservada)"
@@ -2079,6 +2120,12 @@ private fun GamePreviewScreen(
     onExit: () -> Unit
 ) {
     val images = rememberLoadedImages(assets) {}
+    val context = LocalContext.current
+    val audioAssets = remember(assets) {
+        assets.filter { it.mimeType.startsWith("audio/") }.associateBy { it.id }
+    }
+    val audioPlayers = remember { mutableListOf<MediaPlayer>() }
+    val audioFiles = remember { mutableMapOf<Int, File>() }
     val focusRequester = remember { FocusRequester() }
     var left by remember { mutableStateOf(false) }
     var right by remember { mutableStateOf(false) }
@@ -2088,6 +2135,7 @@ private fun GamePreviewScreen(
     var touchPressed by remember { mutableStateOf(false) }
     var touchX by remember { mutableFloatStateOf(0f) }
     var touchY by remember { mutableFloatStateOf(0f) }
+    var audioError by remember { mutableStateOf<String?>(null) }
     val latestInput by rememberUpdatedState(RuntimeInput(left, right, up, down, jump, touchPressed, touchX, touchY))
     var frameTick by remember { mutableIntStateOf(0) }
 
@@ -2100,6 +2148,15 @@ private fun GamePreviewScreen(
         }
     }
 
+    DisposableEffect(runtime) {
+        onDispose {
+            audioPlayers.toList().forEach { it.release() }
+            audioPlayers.clear()
+            audioFiles.values.forEach { it.delete() }
+            audioFiles.clear()
+        }
+    }
+
     LaunchedEffect(runtime) {
         var previousFrame = 0L
         while (true) {
@@ -2107,6 +2164,54 @@ private fun GamePreviewScreen(
             val delta = if (previousFrame == 0L) 1f / 60f else (now - previousFrame) / 1_000_000_000f
             previousFrame = now
             runtime.step(delta, latestInput)
+            runtime.audioRequests.toList().forEach { assetId ->
+                val asset = audioAssets[assetId]
+                if (asset == null) {
+                    audioError = "O recurso de áudio $assetId não existe no projeto."
+                } else {
+                    var createdPlayer: MediaPlayer? = null
+                    try {
+                        val file = audioFiles[assetId] ?: withContext(Dispatchers.IO) {
+                            val directory = File(context.cacheDir, "construct-audio")
+                            check(directory.exists() || directory.mkdirs()) {
+                                "Não foi possível criar o cache de áudio."
+                            }
+                            File(directory, "audio-$assetId-${asset.base64.hashCode()}.bin").also {
+                                it.writeBytes(Base64.decode(asset.base64, Base64.DEFAULT))
+                            }
+                        }.also { audioFiles[assetId] = it }
+                        val player = MediaPlayer()
+                        createdPlayer = player
+                        audioPlayers += player
+                        player.setOnPreparedListener { prepared -> prepared.start() }
+                        player.setOnCompletionListener { completed ->
+                            completed.release()
+                            audioPlayers.remove(completed)
+                        }
+                        player.setOnErrorListener { failed, what, extra ->
+                            audioError = "Falha ao reproduzir '${asset.name}' ($what/$extra)."
+                            failed.release()
+                            audioPlayers.remove(failed)
+                            true
+                        }
+                        player.setDataSource(file.absolutePath)
+                        player.prepareAsync()
+                        audioError = null
+                    } catch (error: java.io.IOException) {
+                        createdPlayer?.release()
+                        createdPlayer?.let(audioPlayers::remove)
+                        audioError = "Falha ao carregar '${asset.name}': ${error.message ?: "erro de leitura"}."
+                    } catch (error: IllegalArgumentException) {
+                        createdPlayer?.release()
+                        createdPlayer?.let(audioPlayers::remove)
+                        audioError = "Áudio inválido '${asset.name}': ${error.message ?: "formato inválido"}."
+                    } catch (error: IllegalStateException) {
+                        createdPlayer?.release()
+                        createdPlayer?.let(audioPlayers::remove)
+                        audioError = "Falha ao iniciar '${asset.name}': ${error.message ?: "estado inválido"}."
+                    }
+                }
+            }
             frameTick = runtime.revision
         }
     }
@@ -2133,6 +2238,9 @@ private fun GamePreviewScreen(
             Text(if (debug) "Depuração da cena" else "Executar cena", Modifier.weight(1f),
                 color = Color.White, style = MaterialTheme.typography.titleMedium)
             TextButton(onClick = onExit) { Text("Fechar", color = Color.White) }
+        }
+        audioError?.let {
+            Text(it, color = Color(0xFFFFB74D), modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp))
         }
         Box(Modifier.weight(1f).fillMaxWidth().background(Color(0xFF111820))) {
             Canvas(
@@ -2588,13 +2696,14 @@ private fun rememberLoadedImages(
 ): Map<Int, ImageBitmap> {
     var images by remember { mutableStateOf<Map<Int, ImageBitmap>>(emptyMap()) }
     var imageSources by remember { mutableStateOf<Map<Int, String>>(emptyMap()) }
-    val imageContent = remember(assets) { assets.map { it.id to it.base64 } }
+    val imageAssets = remember(assets) { assets.filter { it.mimeType.startsWith("image/") } }
+    val imageContent = remember(imageAssets) { imageAssets.map { it.id to it.base64 } }
     val latestImages by rememberUpdatedState(images)
     LaunchedEffect(imageContent) {
         val requestedSources = imageContent.toMap()
         val retained = images.filter { (id, _) -> imageSources[id] == requestedSources[id] }
         images.filterKeys { it !in retained }.values.forEach { it.asAndroidBitmap().recycle() }
-        val missing = assets.filterNot { it.id in retained }
+        val missing = imageAssets.filterNot { it.id in retained }
         val result = withContext(Dispatchers.IO) {
             val decoded = mutableMapOf<Int, ImageBitmap>()
             val errors = mutableListOf<String>()

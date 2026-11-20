@@ -74,6 +74,7 @@ enum class ActionKind {
     ADD_VARIABLE,
     DESTROY_INSTANCE,
     CREATE_INSTANCE,
+    PLAY_AUDIO,
     ROTATE,
     CALL_FUNCTION
 }
@@ -86,7 +87,8 @@ data class EventAction(
     val valueY: Float = 0f,
     val functionName: String = "",
     val valueExpression: String = "",
-    val valueYExpression: String = ""
+    val valueYExpression: String = "",
+    val audioAssetId: Int = 0
 )
 
 data class EventRow(
@@ -172,10 +174,12 @@ class GameRuntime(project: RuntimeProject) {
     var fps: Float = 0f
         private set
     val eventStates = mutableMapOf<Long, Boolean>()
+    val audioRequests = mutableListOf<Int>()
 
     fun step(deltaSeconds: Float, input: RuntimeInput) {
         val dt = deltaSeconds.coerceIn(0f, 0.05f)
         if (dt <= 0f) return
+        audioRequests.clear()
         fps = if (fps == 0f) 1f / dt else fps * 0.9f + (1f / dt) * 0.1f
         eventStates.clear()
         val jumpInput = input.copy(jumpPressed = input.jumpPressed && "PULAR" !in previousInput)
@@ -469,6 +473,7 @@ class GameRuntime(project: RuntimeProject) {
                 targets.forEach { it.x = value; it.y = valueY }
             ActionKind.ROTATE ->
                 targets.forEach { it.rotation = value }
+            ActionKind.PLAY_AUDIO -> if (action.audioAssetId > 0) audioRequests += action.audioAssetId
             ActionKind.CALL_FUNCTION, ActionKind.UNSUPPORTED -> Unit
         }
     }

@@ -186,6 +186,22 @@ class EngineTest {
     }
 
     @Test
+    fun audioActionQueuesTheSelectedResourceForRuntimePlayback() {
+        val event = EventRow(
+            id = 1,
+            conditions = listOf(EventCondition(kind = ConditionKind.START_OF_LAYOUT)),
+            actions = listOf(EventAction(kind = ActionKind.PLAY_AUDIO, audioAssetId = 12))
+        )
+        val runtime = runtime(events = listOf(event))
+
+        runtime.step(0.05f, RuntimeInput())
+        assertEquals(listOf(12), runtime.audioRequests.toList())
+
+        runtime.step(0.05f, RuntimeInput())
+        assertTrue(runtime.audioRequests.isEmpty())
+    }
+
+    @Test
     fun emptyProjectDoesNotCreateRuntimeObjectsAndTouchIsEventDriven() {
         val touchEvent = EventRow(
             id = 1,
